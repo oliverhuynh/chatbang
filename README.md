@@ -9,7 +9,7 @@
 
 > Chatbang Pro builds on Ahmed Hossam’s original idea and pushes it much further: stabler browser automation, DOM-based replies (no clipboard), long-answer handling, better Chromium detection, full Unicode prompts, and clearer recovery when the session drops.
 
-`Chatbang` is a simple tool to access ChatGPT from the terminal, without needing an API key.
+Use **ChatGPT from your terminal** — free to run, with **no API key** and **no API quotas**. Chatbang drives the real [ChatGPT web app](https://chatgpt.com) in Chromium, so you get the full product (models, browsing, attachments, and whatever OpenAI ships on the site) instead of a trimmed-down API integration. If you want a capable **CLI-style ChatGPT client** without maintaining keys or billing, this is built for that.
 
 ![Chatbang](./assets/chatbang.png)
 
@@ -29,12 +29,13 @@ Credit for the original design and article: [How I Made ChatGPT Run on My Termin
 
 ## Installation
 
-On Linux (download from **this** repo’s releases when available, or build from source below):
+On Linux amd64 (binary from [releases](https://github.com/KaraBala10/chatbang-pro/releases), or build from source below):
 
 ```bash
-curl -L https://github.com/KaraBala10/chatbang-pro/releases/latest/download/chatbang -o chatbang
+curl -L https://github.com/KaraBala10/chatbang-pro/releases/download/v1.0.0/chatbang -o chatbang
 chmod +x chatbang
 sudo mv chatbang /usr/bin/chatbang
+chatbang --config
 ```
 
 ### Install from source
