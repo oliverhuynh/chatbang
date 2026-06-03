@@ -1,4 +1,4 @@
-module gg
+module github.com/KaraBala10/chatbang-pro
 
 go 1.26
 

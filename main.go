@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,20 +21,26 @@ import (
 )
 
 const (
-	navTimeout      = 60 * time.Second
-	responseTimeout = 15 * time.Minute
-	pollInterval    = 2 * time.Second
-	stablePolls     = 6
-	doneIdlePolls   = 5
-	confirmDelay    = 4 * time.Second
-	textChunkSize            = 20000
-	partialMinGap            = 15 * time.Second
-	largeResponseThreshold   = 6000 // refresh chat before next prompt
-	plainTextMinLen          = 800
+	navTimeout             = 60 * time.Second
+	responseTimeout        = 15 * time.Minute
+	pollInterval           = 2 * time.Second
+	stablePolls            = 6
+	doneIdlePolls          = 5
+	confirmDelay           = 4 * time.Second
+	textChunkSize          = 20000
+	partialMinGap          = 15 * time.Second
+	largeResponseThreshold = 6000 // refresh chat before next prompt
+	plainTextMinLen        = 800
 )
 
-// a list of all possible common executable names
-// for chromium-based browsers.
+// Shared DOM snippet: latest assistant message node(s).
+const jsAssistantNodes = `
+		let nodes = document.querySelectorAll('[data-message-author-role="assistant"]');
+		if (!nodes.length) nodes = document.querySelectorAll('article[data-turn="assistant"]');`
+
+var browserSearchDirs = []string{"/bin/", "/usr/bin/"}
+
+// Common executable names for Chromium-based browsers.
 var browsers = []string{
 	"chromium",
 	"chromium-browser",
@@ -82,20 +89,15 @@ func browserAllocatorOptions(browserPath, profileDir string, headless bool) []ch
 }
 
 func detectBrowser() (string, error) {
-	var basePaths = []string{
-		"/bin/",
-		"/usr/bin/",
-	}
-	for _, basePath := range basePaths {
+	for _, dir := range browserSearchDirs {
 		for _, name := range browsers {
-			path := basePath + name
+			path := dir + name
 			if _, err := os.Stat(path); err == nil {
-				fmt.Println(path)
 				return path, nil
 			}
 		}
 	}
-	return "", fmt.Errorf("no Chromium-based browser found in PATH")
+	return "", fmt.Errorf("no Chromium-based browser found in /bin or /usr/bin")
 }
 
 func parseBoolConfig(value string) (bool, bool) {
@@ -109,16 +111,10 @@ func parseBoolConfig(value string) (bool, bool) {
 	}
 }
 
-func readConfigFile(configPath string) (browser string, headless bool, headlessSet bool) {
+func parseConfig(r io.Reader) (browser string, headless bool, headlessSet bool) {
 	headless = true // default for chat sessions
 
-	file, err := os.Open(configPath)
-	if err != nil {
-		return "", headless, false
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -143,17 +139,30 @@ func readConfigFile(configPath string) (browser string, headless bool, headlessS
 	return browser, headless, headlessSet
 }
 
-func parseCLIHeadless(args []string, current bool) bool {
-	headless := current
+// parseCLI applies headless flags and reports special modes. --config takes precedence over --help.
+func parseCLI(args []string, headless bool) (wantConfig, wantHelp bool, headlessOut bool) {
+	headlessOut = headless
 	for _, arg := range args[1:] {
 		switch arg {
+		case "--config":
+			wantConfig = true
+		case "--help", "-h":
+			wantHelp = true
 		case "--headless":
-			headless = true
+			headlessOut = true
 		case "--no-headless":
-			headless = false
+			headlessOut = false
 		}
 	}
-	return headless
+	return wantConfig, wantHelp, headlessOut
+}
+
+func printHelp() {
+	const helpMarkdown = "`Chatbang` is a simple tool to access ChatGPT from the terminal, without needing for an API key.  \n" +
+		"## Configuration  \n `Chatbang` requires a Chromium-based browser (e.g. Chrome, Edge, Brave) to work, so you need to have one. And then make sure that it points to the right path to your chosen browser in the default config path for `Chatbang`: `$HOME/.config/chatbang/chatbang`.  \n\nIt's default is: ``` browser=/usr/bin/google-chrome ```  \nChange it to your favorite Chromium-based browser.  \n\n" +
+		"You also need to log in to ChatGPT in `Chatbang`'s Chromium session, so you need to do: ```bash chatbang --config ``` That opens ChatGPT in a dedicated browser profile; log in, then press Enter in the terminal.  \n\n" +
+		"Chat runs headless by default. Set `headless=false` in `$HOME/.config/chatbang/chatbang`, or use `--no-headless` to show the browser. Use `--headless` to force headless mode.  \n\n"
+	fmt.Println(string(markdown.Render(helpMarkdown, 80, 2)))
 }
 
 func main() {
@@ -163,41 +172,32 @@ func main() {
 		return
 	}
 
-	configDir := usr.HomeDir + "/.config/chatbang"
-	configPath := configDir + "/chatbang"
-	profileDir := usr.HomeDir + "/.config/chatbang/profile_data"
+	configDir := filepath.Join(usr.HomeDir, ".config", "chatbang")
+	configPath := filepath.Join(configDir, "chatbang")
+	profileDir := filepath.Join(configDir, "profile_data")
 
-	err = os.MkdirAll(configDir, 0o755)
-	if err != nil {
+	if err = os.MkdirAll(configDir, 0o755); err != nil {
 		fmt.Println("Error creating config directory:", err)
 		return
 	}
 
-	configFile, err := os.OpenFile(configPath,
-		os.O_RDWR|os.O_CREATE, 0o644)
+	configFile, err := os.OpenFile(configPath, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		fmt.Println("Error opening config file:", err)
 		return
 	}
 	defer configFile.Close()
 
-	info, err := configFile.Stat()
-	if err != nil {
-		fmt.Println("Error getting file info:", err)
+	if _, err = configFile.Seek(0, io.SeekStart); err != nil {
+		fmt.Println("Error reading config file:", err)
 		return
 	}
+	defaultBrowser, headless, _ := parseConfig(configFile)
 
-	if info.Size() == 0 {
-		configFile.Seek(0, 0)
-	}
-
-	defaultBrowser, headless, _ := readConfigFile(configPath)
-
-	// if config is empty or invalid, detect in PATH
 	if defaultBrowser == "" {
 		detectedBrowser, err := detectBrowser()
 		if err != nil {
-			fmt.Println("No Chromium-based browser found in PATH or config.")
+			fmt.Println("No Chromium-based browser found in /bin, /usr/bin, or config.")
 			fmt.Println("Please install a Chromium-based browser or edit the config at", configPath)
 			return
 		}
@@ -205,38 +205,24 @@ func main() {
 		defaultBrowser = detectedBrowser
 		defaultConfig := "browser=" + defaultBrowser + "\nheadless=" + strconv.FormatBool(headless) + "\n"
 
-		_, err = io.WriteString(configFile, defaultConfig)
-		if err != nil {
+		if _, err = configFile.Seek(0, io.SeekStart); err != nil {
+			fmt.Println("Error writing default config:", err)
+			return
+		}
+		if _, err = io.WriteString(configFile, defaultConfig); err != nil {
 			fmt.Println("Error writing default config:", err)
 			return
 		}
 	}
 
-	headless = parseCLIHeadless(os.Args, headless)
-
-	if len(os.Args) > 1 {
-		for _, arg := range os.Args[1:] {
-			if arg == "--config" {
-				loginProfile(defaultBrowser, profileDir)
-				return
-			}
-		}
-
-		for _, arg := range os.Args[1:] {
-			if arg == "--help" || arg == "-h" {
-			helpStr := "`Chatbang` is a simple tool to access ChatGPT from the terminal, without needing for an API key.  \n"
-
-			helpStr += "## Configuration  \n `Chatbang` requires a Chromium-based browser (e.g. Chrome, Edge, Brave) to work, so you need to have one. And then make sure that it points to the right path to your chosen browser in the default config path for `Chatbang`: `$HOME/.config/chatbang/chatbang`.  \n\nIt's default is: ``` browser=/usr/bin/google-chrome ```  \nChange it to your favorite Chromium-based browser.  \n\n"
-
-			helpStr += "You also need to log in to ChatGPT in `Chatbang`'s Chromium session, so you need to do: ```bash chatbang --config ``` That opens ChatGPT in a dedicated browser profile; log in, then press Enter in the terminal.  \n\n"
-
-			helpStr += "Chat runs headless by default. Set `headless=false` in `$HOME/.config/chatbang/chatbang`, or use `--no-headless` to show the browser. Use `--headless` to force headless mode.  \n\n"
-
-			res := markdown.Render(string(helpStr), 80, 2)
-			fmt.Println(string(res))
-			return
-			}
-		}
+	wantConfig, wantHelp, headless := parseCLI(os.Args, headless)
+	if wantConfig {
+		loginProfile(defaultBrowser, profileDir)
+		return
+	}
+	if wantHelp {
+		printHelp()
+		return
 	}
 
 	sess, err := newChatSession(defaultBrowser, profileDir, headless)
@@ -259,11 +245,11 @@ func main() {
 }
 
 type chatSession struct {
-	allocCtx   context.Context
+	allocCtx    context.Context
 	allocCancel context.CancelFunc
-	ctx        context.Context
-	ctxCancel  context.CancelFunc
-	lastPeak   int
+	ctx         context.Context
+	ctxCancel   context.CancelFunc
+	lastPeak    int
 }
 
 func newChatSession(browser, profileDir string, headless bool) (*chatSession, error) {
@@ -445,10 +431,9 @@ func thresholdsForLen(contentLen int) (stableNeeded, idleNeeded int, confirmWait
 }
 
 func pollResponseStatus(ctx context.Context, pollWait time.Duration) (responseStatus, error) {
-	const statusJS = `(() => {
+	statusJS := `(() => {
 		if (document.querySelector('[data-testid="stop-button"]')) return {generating: true};
-		let nodes = document.querySelectorAll('[data-message-author-role="assistant"]');
-		if (!nodes.length) nodes = document.querySelectorAll('article[data-turn="assistant"]');
+		` + jsAssistantNodes + `
 		if (!nodes.length) return {generating: true};
 		const tc = nodes[nodes.length - 1].textContent || "";
 		const len = tc.length;
@@ -465,9 +450,8 @@ func pollResponseStatus(ctx context.Context, pollWait time.Duration) (responseSt
 }
 
 func fetchFullResponse(ctx context.Context) (string, error) {
-	const lenJS = `(() => {
-		let nodes = document.querySelectorAll('[data-message-author-role="assistant"]');
-		if (!nodes.length) nodes = document.querySelectorAll('article[data-turn="assistant"]');
+	lenJS := `(() => {
+		` + jsAssistantNodes + `
 		if (!nodes.length) return 0;
 		return (nodes[nodes.length - 1].textContent || "").length;
 	})()`
@@ -483,12 +467,11 @@ func fetchFullResponse(ctx context.Context) (string, error) {
 	var sb strings.Builder
 	for offset := 0; offset < totalLen; offset += textChunkSize {
 		chunkJS := fmt.Sprintf(`(() => {
-			let nodes = document.querySelectorAll('[data-message-author-role="assistant"]');
-			if (!nodes.length) nodes = document.querySelectorAll('article[data-turn="assistant"]');
+			%s
 			if (!nodes.length) return "";
 			const t = nodes[nodes.length - 1].textContent || "";
 			return t.substring(%d, %d);
-		})()`, offset, offset+textChunkSize)
+		})()`, jsAssistantNodes, offset, offset+textChunkSize)
 
 		var part string
 		if err := chromedp.Run(ctx, chromedp.Evaluate(chunkJS, &part)); err != nil {
