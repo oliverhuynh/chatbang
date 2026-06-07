@@ -11,8 +11,6 @@
 
 Use **ChatGPT from your terminal** — free to run, with **no API key** and **no API quotas**. Chatbang drives the real [ChatGPT web app](https://chatgpt.com) in Chromium, so you get the full product (models, browsing, attachments, and whatever OpenAI ships on the site) instead of a trimmed-down API integration. If you want a capable **CLI-style ChatGPT client** without maintaining keys or billing, this is built for that.
 
-![Chatbang](./assets/chatbang.png)
-
 ## Why Chatbang Pro?
 
 Compared to the upstream [chatbang](https://github.com/ahmedhosssam/chatbang) release flow, this fork focuses on **production-style reliability**:
