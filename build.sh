@@ -49,7 +49,7 @@ fi
 
 if [[ "${SKIP_SYSTEM_INSTALL:-}" != "1" ]]; then
 	echo "==> installing to /usr/bin/chatbang-pro (sudo)…"
-	sudo mv -f "${OUTPUT}" /usr/bin/chatbang-pro
+	sudo cp -f "${OUTPUT}" /usr/bin/chatbang-pro
 	echo "==> installed:  /usr/bin/chatbang-pro"
 else
 	echo "==> done:       ${ROOT}/${OUTPUT}"
