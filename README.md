@@ -32,10 +32,10 @@ Credit for the original design and article: [How I Made ChatGPT Run on My Termin
 On Linux amd64 (binary from [releases](https://github.com/KaraBala10/chatbang-pro/releases), or build from source below):
 
 ```bash
-curl -L https://github.com/KaraBala10/chatbang-pro/releases/download/v1.0.0/chatbang -o chatbang
-chmod +x chatbang
-sudo mv chatbang /usr/bin/chatbang
-chatbang --config
+curl -L https://github.com/KaraBala10/chatbang-pro/releases/download/v1.0.0/chatbang-pro -o chatbang-pro
+chmod +x chatbang-pro
+sudo mv chatbang-pro /usr/bin/chatbang-pro
+chatbang-pro --config
 ```
 
 ### Install from source
@@ -44,8 +44,14 @@ chatbang --config
 git clone https://github.com/KaraBala10/chatbang-pro.git
 cd chatbang-pro
 go mod tidy
-go build -o chatbang main.go
-sudo mv chatbang /usr/bin/chatbang
+./build.sh
+```
+
+Or manually:
+
+```bash
+go build -o chatbang-pro .
+sudo mv chatbang-pro /usr/bin/chatbang-pro
 ```
 
 ## Requirements
@@ -58,7 +64,7 @@ sudo mv chatbang /usr/bin/chatbang
 Run setup once to create `$HOME/.config/chatbang/`:
 
 ```bash
-chatbang --config
+chatbang-pro --config
 ```
 
 This opens ChatGPT in a **visible** browser window using a dedicated profile at `$HOME/.config/chatbang/profile_data`. Log in if needed, then return to the terminal and **press Enter** to save the session.
@@ -78,8 +84,8 @@ headless=true
 CLI overrides for headless mode:
 
 ```bash
-chatbang --headless      # force headless
-chatbang --no-headless   # show the browser while chatting
+chatbang-pro --headless      # force headless
+chatbang-pro --no-headless   # show the browser while chatting
 ```
 
 ## Usage
@@ -87,15 +93,19 @@ chatbang --no-headless   # show the browser while chatting
 Start an interactive chat session:
 
 ```bash
-chatbang
+chatbang-pro
 ```
 
-Type a prompt at `>`, wait for `[Thinking...]`, then the reply is printed in the terminal. Empty lines are ignored; use `Ctrl+C` to quit.
+Type a prompt at `>`, wait for `[Thinking...]`, then the reply is printed in the terminal. Empty lines are ignored; type `exit` or `quit` to leave cleanly.
 
 ```bash
-chatbang --help    # show help
-chatbang --config  # log in / refresh browser profile
+chatbang-pro --help    # show help
+chatbang-pro --config  # log in / refresh browser profile
+chatbang-pro --gpt https://chatgpt.com/g/g-81BdggBV3-website-mobile-app-builder-ui-ux-web-design
+chatbang-pro -g g-81BdggBV3-website-mobile-app-builder-ui-ux-web-design
 ```
+
+Use `--gpt`, `--custom-gpt`, or `-g` with a full custom GPT link, a `/g/g-...` path, or just the `g-...` id.
 
 ### Tips for long replies
 

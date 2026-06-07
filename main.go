@@ -8,35 +8,58 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/chromedp/chromedp"
 
 	markdown "github.com/MichaelMure/go-term-markdown"
+	"golang.org/x/term"
 )
+
+var version = "dev"
 
 const (
 	navTimeout             = 60 * time.Second
 	responseTimeout        = 15 * time.Minute
-	pollInterval           = 2 * time.Second
-	stablePolls            = 6
-	doneIdlePolls          = 5
-	confirmDelay           = 4 * time.Second
+	pollIntervalActive     = 1 * time.Second  // while the model is still streaming
+	pollIntervalDone       = 350 * time.Millisecond // after streaming stops
+	stablePollsDefault     = 2 // consecutive unchanged readings before fetch
+	stablePollsLarge       = 4 // for very long replies still being finalized in DOM
+	confirmDelayDefault    = 400 * time.Millisecond
+	confirmDelayLarge      = 1500 * time.Millisecond
 	textChunkSize          = 20000
 	partialMinGap          = 15 * time.Second
 	largeResponseThreshold = 6000 // refresh chat before next prompt
 	plainTextMinLen        = 800
+
+	chatURL     = "https://chatgpt.com"
+	tempChatURL = "https://chatgpt.com/?temporary-chat=true"
+
+	promptPrefix      = "> "
+	promptPlaceholder = "Ask anything… (type exit to quit)"
 )
 
-// Shared DOM snippet: latest assistant message node(s).
+// Shared DOM snippets for assistant messages.
 const jsAssistantNodes = `
 		let nodes = document.querySelectorAll('[data-message-author-role="assistant"]');
 		if (!nodes.length) nodes = document.querySelectorAll('article[data-turn="assistant"]');`
+
+const jsIsStreaming = `
+		function isStillStreaming(node) {
+			if (!node) return true;
+			if (node.getAttribute('data-is-streaming') === 'true') return true;
+			if (node.querySelector('[data-is-streaming="true"]')) return true;
+			if (node.querySelector('.result-streaming')) return true;
+			return false;
+		}`
 
 var browserSearchDirs = []string{"/bin/", "/usr/bin/"}
 
@@ -139,30 +162,253 @@ func parseConfig(r io.Reader) (browser string, headless bool, headlessSet bool) 
 	return browser, headless, headlessSet
 }
 
-// parseCLI applies headless flags and reports special modes. --config takes precedence over --help.
-func parseCLI(args []string, headless bool) (wantConfig, wantHelp bool, headlessOut bool) {
-	headlessOut = headless
-	for _, arg := range args[1:] {
-		switch arg {
-		case "--config":
-			wantConfig = true
-		case "--help", "-h":
-			wantHelp = true
-		case "--headless":
-			headlessOut = true
-		case "--no-headless":
-			headlessOut = false
-		}
-	}
-	return wantConfig, wantHelp, headlessOut
+type cliOptions struct {
+	wantConfig    bool
+	wantHelp      bool
+	headless      bool
+	temporaryChat bool
+	customGPT     string
 }
 
-func printHelp() {
-	const helpMarkdown = "`Chatbang` is a simple tool to access ChatGPT from the terminal, without needing for an API key.  \n" +
-		"## Configuration  \n `Chatbang` requires a Chromium-based browser (e.g. Chrome, Edge, Brave) to work, so you need to have one. And then make sure that it points to the right path to your chosen browser in the default config path for `Chatbang`: `$HOME/.config/chatbang/chatbang`.  \n\nIt's default is: ``` browser=/usr/bin/google-chrome ```  \nChange it to your favorite Chromium-based browser.  \n\n" +
-		"You also need to log in to ChatGPT in `Chatbang`'s Chromium session, so you need to do: ```bash chatbang --config ``` That opens ChatGPT in a dedicated browser profile; log in, then press Enter in the terminal.  \n\n" +
-		"Chat runs headless by default. Set `headless=false` in `$HOME/.config/chatbang/chatbang`, or use `--no-headless` to show the browser. Use `--headless` to force headless mode.  \n\n"
-	fmt.Println(string(markdown.Render(helpMarkdown, 80, 2)))
+func flagValue(args []string, i int) (string, int, bool) {
+	if i+1 >= len(args) {
+		return "", i, false
+	}
+	return args[i+1], i + 1, true
+}
+
+func setCustomGPT(opts *cliOptions, value string) {
+	opts.customGPT = strings.TrimSpace(value)
+}
+
+// parseCLI applies flags and modes. --config takes precedence over --help.
+func parseCLI(args []string, headless bool) cliOptions {
+	opts := cliOptions{headless: headless}
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--config":
+			opts.wantConfig = true
+		case "--help", "-h":
+			opts.wantHelp = true
+		case "--headless":
+			opts.headless = true
+		case "--no-headless":
+			opts.headless = false
+		case "--temporary-chat", "--temp":
+			opts.temporaryChat = true
+		case "--gpt", "--custom-gpt", "-g":
+			value, next, ok := flagValue(args, i)
+			if !ok {
+				continue
+			}
+			setCustomGPT(&opts, value)
+			i = next
+		default:
+			if value, ok := strings.CutPrefix(arg, "--gpt="); ok {
+				setCustomGPT(&opts, value)
+			} else if value, ok := strings.CutPrefix(arg, "--custom-gpt="); ok {
+				setCustomGPT(&opts, value)
+			}
+		}
+	}
+	return opts
+}
+
+func normalizeCustomGPTURL(input string) (string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", fmt.Errorf("custom GPT URL is empty")
+	}
+
+	switch {
+	case strings.HasPrefix(input, "/g/"):
+		input = "https://chatgpt.com" + input
+	case strings.HasPrefix(input, "g-"):
+		input = "https://chatgpt.com/g/" + input
+	}
+
+	u, err := url.Parse(input)
+	if err != nil {
+		return "", fmt.Errorf("invalid custom GPT URL: %w", err)
+	}
+	if u.Scheme == "" {
+		u, err = url.Parse("https://" + input)
+		if err != nil {
+			return "", fmt.Errorf("invalid custom GPT URL: %w", err)
+		}
+	}
+
+	host := strings.ToLower(u.Hostname())
+	if host != "chatgpt.com" && host != "www.chatgpt.com" {
+		return "", fmt.Errorf("custom GPT URL must be on chatgpt.com")
+	}
+
+	path := strings.TrimSuffix(u.EscapedPath(), "/")
+	if !strings.HasPrefix(path, "/g/g-") {
+		return "", fmt.Errorf("custom GPT URL must look like https://chatgpt.com/g/g-...")
+	}
+
+	return "https://chatgpt.com" + path, nil
+}
+
+func customGPTPathPrefix(chatURL string) string {
+	if !strings.Contains(chatURL, "/g/g-") {
+		return ""
+	}
+	u, err := url.Parse(chatURL)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(u.Path, "/")
+}
+
+func customGPTNewChatURL(chatURL string) string {
+	gptPrefix := customGPTPathPrefix(chatURL)
+	if gptPrefix == "" {
+		return chatURL
+	}
+	return "https://chatgpt.com" + gptPrefix + "/c/new"
+}
+
+func isOnCustomGPTPathJS(gptPrefix string) (string, error) {
+	prefixJSON, err := json.Marshal(gptPrefix)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`(() => {
+		const expected = %s;
+		if (!expected) return true;
+		const p = location.pathname.replace(/\/$/, '');
+		if (!p || p === '/') return false;
+		return p === expected || p.startsWith(expected + '/');
+	})()`, prefixJSON), nil
+}
+
+func isOnCustomGPTPath(ctx context.Context, gptPrefix string) (bool, error) {
+	if gptPrefix == "" {
+		return true, nil
+	}
+	js, err := isOnCustomGPTPathJS(gptPrefix)
+	if err != nil {
+		return false, err
+	}
+	var ok bool
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &ok)); err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
+func ensureCustomGPTPage(ctx context.Context, chatURL, gptPrefix string) error {
+	if gptPrefix == "" {
+		return nil
+	}
+	ok, err := isOnCustomGPTPath(ctx, gptPrefix)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+
+	fmt.Fprintln(os.Stderr, "ChatGPT left the custom GPT — reopening…")
+	for _, target := range []string{customGPTNewChatURL(chatURL), chatURL} {
+		if err := chromedp.Run(ctx, chromedp.Navigate(target)); err != nil {
+			return err
+		}
+		if err := chromedp.Run(ctx, chromedp.Sleep(2*time.Second)); err != nil {
+			return err
+		}
+		if err := tryActivateCustomGPT(ctx, gptPrefix); err != nil {
+			return err
+		}
+		ok, err := isOnCustomGPTPath(ctx, gptPrefix)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	}
+	return nil
+}
+
+func resolveChatURL(temporaryChat bool, customGPT string) (string, error) {
+	if customGPT != "" {
+		return normalizeCustomGPTURL(customGPT)
+	}
+	if temporaryChat {
+		return tempChatURL, nil
+	}
+	return chatURL, nil
+}
+
+func printHelp(configPath string) {
+	helpMarkdown := fmt.Sprintf(`# Chatbang Pro
+
+**ChatGPT in your terminal** — no API key, no API quotas. Chatbang drives the real ChatGPT web app in Chromium.
+
+## Usage
+
+`+"```"+`bash
+chatbang-pro [flags]
+`+"```"+`
+
+Type a prompt at `+"`> `"+`, wait for `+"`[Thinking...]`"+`, then read the reply. Type **exit** or **quit** to leave cleanly.
+
+## Flags
+
+| Flag | Description |
+|------|-------------|
+| `+"`-h`"+`, `+"`--help`"+` | Show this help |
+| `+"`--config`"+` | Open ChatGPT in a visible browser to log in or refresh your session |
+| `+"`--headless`"+` | Force headless mode (browser runs in the background) |
+| `+"`--no-headless`"+` | Show the browser window while chatting |
+| `+"`--temporary-chat`"+`, `+"`--temp`"+` | Use [temporary chat](%s) (not saved to history) |
+| `+"`--gpt`"+`, `+"`--custom-gpt`"+`, `+"`-g`"+` | Chat with a [custom GPT](https://chatgpt.com/gpts) (full URL, `+"`/g/g-...`"+` path, or `+"`g-...`"+` id) |
+
+## First-time setup
+
+1. Install a Chromium-based browser (Chrome, Edge, Brave, etc.) under `+"`/bin`"+` or `+"`/usr/bin`"+`.
+2. Run `+"`chatbang-pro --config`"+` — log in to ChatGPT, then press **Enter** in the terminal.
+3. Start chatting: `+"`chatbang-pro`"+`
+
+## Configuration file
+
+Path: `+"`%s`"+`
+
+`+"```"+`
+browser=/usr/bin/google-chrome
+headless=true
+`+"```"+`
+
+| Key | Description |
+|-----|-------------|
+| `+"`browser`"+` | Path to your Chromium-based browser executable |
+| `+"`headless`"+` | `+"`true`"+` (default) hides the browser; `+"`false`"+` shows it |
+
+CLI flags override `+"`headless`"+` for that run only.
+
+## Examples
+
+`+"```"+`bash
+chatbang-pro                          # interactive chat (headless)
+chatbang-pro --no-headless            # show the browser while chatting
+chatbang-pro --temporary-chat         # private temporary chat session
+chatbang-pro --temp --no-headless     # visible temporary chat
+chatbang-pro --gpt https://chatgpt.com/g/g-81BdggBV3-website-mobile-app-builder-ui-ux-web-design
+chatbang-pro -g g-81BdggBV3-website-mobile-app-builder-ui-ux-web-design
+chatbang-pro --config                 # log in / refresh browser profile
+`+"```"+`
+
+## Tips
+
+- Very long replies can take several minutes (up to 15 minutes per answer).
+- After a large reply (>6000 characters), the next prompt starts a **fresh chat** automatically.
+- For follow-ups that need prior context, include that context in the same prompt.
+`, tempChatURL, configPath)
+	fmt.Println(string(markdown.Render(helpMarkdown, 100, 2)))
 }
 
 func main() {
@@ -175,6 +421,12 @@ func main() {
 	configDir := filepath.Join(usr.HomeDir, ".config", "chatbang")
 	configPath := filepath.Join(configDir, "chatbang")
 	profileDir := filepath.Join(configDir, "profile_data")
+
+	cli := parseCLI(os.Args, true)
+	if cli.wantHelp {
+		printHelp(configPath)
+		return
+	}
 
 	if err = os.MkdirAll(configDir, 0o755); err != nil {
 		fmt.Println("Error creating config directory:", err)
@@ -215,32 +467,172 @@ func main() {
 		}
 	}
 
-	wantConfig, wantHelp, headless := parseCLI(os.Args, headless)
-	if wantConfig {
+	cli = parseCLI(os.Args, headless)
+	if cli.wantConfig {
 		loginProfile(defaultBrowser, profileDir)
 		return
 	}
-	if wantHelp {
-		printHelp()
-		return
+
+	headless = cli.headless
+	chatTarget, err := resolveChatURL(cli.temporaryChat, cli.customGPT)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if cli.customGPT != "" {
+		if cli.temporaryChat {
+			fmt.Fprintln(os.Stderr, "Note: --temp is ignored when --gpt is set.")
+		}
+		fmt.Fprintf(os.Stderr, "Custom GPT: %s\n", chatTarget)
+	} else if cli.temporaryChat {
+		fmt.Fprintln(os.Stderr, "Temporary chat mode — conversations are not saved to history.")
 	}
 
-	sess, err := newChatSession(defaultBrowser, profileDir, headless)
+	fmt.Fprintf(os.Stderr, "chatbang-pro %s\n", version)
+	fmt.Fprintln(os.Stderr, "Starting browser and opening ChatGPT…")
+	sess, err := newChatSession(defaultBrowser, profileDir, headless, chatTarget)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer sess.close()
 
-	fmt.Print("> ")
-	promptScanner := bufio.NewScanner(os.Stdin)
-	for promptScanner.Scan() {
-		prompt := strings.TrimSpace(promptScanner.Text())
-		if prompt == "" {
-			fmt.Print("> ")
+	fmt.Fprintln(os.Stderr, "Ready — start chatting below.")
+	promptLoop(sess)
+}
+
+func isExitCommand(prompt string) bool {
+	switch strings.ToLower(strings.TrimSpace(prompt)) {
+	case "exit", "quit", "q", ":q", "/exit", "/quit":
+		return true
+	default:
+		return false
+	}
+}
+
+func readRuneFromStdin() (rune, error) {
+	buf := make([]byte, 0, utf8.UTFMax)
+	for {
+		var b [1]byte
+		n, err := os.Stdin.Read(b[:])
+		if n == 0 {
+			if err != nil {
+				return 0, err
+			}
+			return 0, io.EOF
+		}
+		buf = append(buf, b[0])
+		r, size := utf8.DecodeRune(buf)
+		if r == utf8.RuneError && size == 1 && len(buf) < utf8.UTFMax {
 			continue
 		}
+		return r, nil
+	}
+}
+
+func readPromptLine() (string, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return "", err
+			}
+			return "", io.EOF
+		}
+		return scanner.Text(), nil
+	}
+
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		scanner := bufio.NewScanner(os.Stdin)
+		fmt.Print(promptPrefix)
+		if !scanner.Scan() {
+			if scanErr := scanner.Err(); scanErr != nil {
+				return "", scanErr
+			}
+			return "", io.EOF
+		}
+		return scanner.Text(), nil
+	}
+	defer term.Restore(fd, oldState)
+
+	fmt.Print(promptPrefix)
+	fmt.Print("\x1b[2m" + promptPlaceholder + "\x1b[0m")
+
+	var line []rune
+	placeholderVisible := true
+
+	redraw := func() {
+		fmt.Print("\r" + promptPrefix + "\x1b[K")
+		fmt.Print(string(line))
+	}
+
+	for {
+		r, err := readRuneFromStdin()
+		if err != nil {
+			fmt.Println()
+			return "", err
+		}
+
+		switch r {
+		case '\r', '\n':
+			fmt.Print("\r\n")
+			return string(line), nil
+		case 4: // Ctrl+D
+			fmt.Print("\r\n")
+			return "", io.EOF
+		case 3: // Ctrl+C — suggest exit instead of abrupt kill
+			fmt.Print("\r\x1b[K")
+			fmt.Println("Type exit or quit to leave.")
+			line = line[:0]
+			placeholderVisible = true
+			fmt.Print(promptPrefix)
+			fmt.Print("\x1b[2m" + promptPlaceholder + "\x1b[0m")
+			continue
+		case 127, 8: // backspace / delete
+			if len(line) > 0 {
+				line = line[:len(line)-1]
+				if len(line) == 0 {
+					placeholderVisible = true
+					fmt.Print("\r" + promptPrefix + "\x1b[K\x1b[2m" + promptPlaceholder + "\x1b[0m")
+				} else {
+					redraw()
+				}
+			}
+		case unicode.ReplacementChar:
+			continue
+		default:
+			if !unicode.IsPrint(r) {
+				continue
+			}
+			if placeholderVisible {
+				placeholderVisible = false
+				fmt.Print("\r" + promptPrefix + "\x1b[K")
+			}
+			line = append(line, r)
+			fmt.Print(string(r))
+		}
+	}
+}
+
+func promptLoop(sess *chatSession) {
+	for {
+		line, err := readPromptLine()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			fmt.Fprintln(os.Stderr, "prompt:", err)
+			return
+		}
+
+		prompt := strings.TrimSpace(line)
+		if prompt == "" {
+			continue
+		}
+		if isExitCommand(prompt) {
+			return
+		}
 		runOneTurn(sess, prompt)
-		fmt.Print("> ")
 	}
 }
 
@@ -249,15 +641,16 @@ type chatSession struct {
 	allocCancel context.CancelFunc
 	ctx         context.Context
 	ctxCancel   context.CancelFunc
+	chatURL     string
 	lastPeak    int
 }
 
-func newChatSession(browser, profileDir string, headless bool) (*chatSession, error) {
+func newChatSession(browser, profileDir string, headless bool, chatTarget string) (*chatSession, error) {
 	allocCtx, allocCancel := chromedp.NewExecAllocator(
 		context.Background(),
 		browserAllocatorOptions(browser, profileDir, headless)...,
 	)
-	s := &chatSession{allocCtx: allocCtx, allocCancel: allocCancel}
+	s := &chatSession{allocCtx: allocCtx, allocCancel: allocCancel, chatURL: chatTarget}
 	if err := s.openTab(); err != nil {
 		allocCancel()
 		return nil, err
@@ -265,16 +658,89 @@ func newChatSession(browser, profileDir string, headless bool) (*chatSession, er
 	return s, nil
 }
 
-func waitForChatReady(ctx context.Context) error {
-	// Must use the tab context (not a short-lived child) or Chrome dies when the child is canceled.
-	const readyJS = `(() => {
-		if (document.title.includes('Just a moment')) return false;
-		return !!document.querySelector('#prompt-textarea');
-	})()`
-	deadline := time.Now().Add(navTimeout)
+func customGPTActivateJS(gptPrefix string) (string, error) {
+	prefixJSON, err := json.Marshal(gptPrefix)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(`(() => {
+		const expected = %s;
+		const p = location.pathname.replace(/\/$/, '');
+		if (!p || p === '/') return false;
+		if (p !== expected && !p.startsWith(expected + '/')) return false;
+		if (document.querySelector('#prompt-textarea') && p.startsWith(expected + '/')) return true;
+		if (p !== expected) return false;
+
+		const buttons = document.querySelectorAll('button, a[role="button"]');
+		for (const el of buttons) {
+			const t = (el.textContent || '').trim().toLowerCase();
+			if (t === 'start chat' || t.includes('start chat')) {
+				el.click();
+				return false;
+			}
+		}
+		for (const el of document.querySelectorAll('a[href]')) {
+			const href = el.getAttribute('href') || '';
+			if (href.includes(expected) && href.includes('/c/')) {
+				el.click();
+				return false;
+			}
+		}
+		return false;
+	})()`, prefixJSON), nil
+}
+
+func tryActivateCustomGPT(ctx context.Context, gptPrefix string) error {
+	clickJS, err := customGPTActivateJS(gptPrefix)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		var done bool
+		if err := chromedp.Run(ctx, chromedp.Evaluate(clickJS, &done)); err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+		time.Sleep(pollIntervalActive)
+	}
+	return nil
+}
+
+func waitForChatReady(ctx context.Context, chatURL string) error {
+	// Must use the tab context (not a short-lived child) or Chrome dies when the child is canceled.
+	gptPrefix := customGPTPathPrefix(chatURL)
+	if gptPrefix != "" {
+		if err := tryActivateCustomGPT(ctx, gptPrefix); err != nil {
+			return err
+		}
+	}
+
+	pathCheckJS, err := isOnCustomGPTPathJS(gptPrefix)
+	if err != nil {
+		return err
+	}
+	readyJS := fmt.Sprintf(`(() => {
+		if (document.title.includes('Just a moment')) return false;
+		if (!document.querySelector('#prompt-textarea')) return false;
+		return %s;
+	})()`, pathCheckJS)
+
+	deadline := time.Now().Add(navTimeout)
+	nextNotice := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if gptPrefix != "" {
+			if err := ensureCustomGPTPage(ctx, chatURL, gptPrefix); err != nil {
+				return err
+			}
 		}
 		var ready bool
 		err := chromedp.Run(ctx,
@@ -286,7 +752,16 @@ func waitForChatReady(ctx context.Context) error {
 		if ready {
 			return chromedp.Run(ctx, chromedp.Sleep(1*time.Second))
 		}
-		time.Sleep(pollInterval)
+		if gptPrefix != "" {
+			if err := tryActivateCustomGPT(ctx, gptPrefix); err != nil {
+				return err
+			}
+		}
+		if time.Now().After(nextNotice) {
+			fmt.Fprintln(os.Stderr, "Still waiting for chat to start…")
+			nextNotice = time.Now().Add(10 * time.Second)
+		}
+		time.Sleep(pollIntervalActive)
 	}
 	return fmt.Errorf("chatgpt.com did not become ready within %s", navTimeout)
 }
@@ -296,10 +771,42 @@ func (s *chatSession) openTab() error {
 		s.ctxCancel()
 	}
 	s.ctx, s.ctxCancel = chromedp.NewContext(s.allocCtx, chromedp.WithErrorf(suppressChromedpNoise))
-	if err := chromedp.Run(s.ctx, chromedp.Navigate(`https://chatgpt.com`)); err != nil {
-		return err
+	if gptPrefix := customGPTPathPrefix(s.chatURL); gptPrefix != "" {
+		if err := s.openCustomGPT(gptPrefix); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Opening %s…\n", s.chatURL)
+		if err := chromedp.Run(s.ctx, chromedp.Navigate(s.chatURL)); err != nil {
+			return err
+		}
 	}
-	return waitForChatReady(s.ctx)
+	fmt.Fprintln(os.Stderr, "Waiting for chat to start…")
+	return waitForChatReady(s.ctx, s.chatURL)
+}
+
+func (s *chatSession) openCustomGPT(gptPrefix string) error {
+	targets := []string{customGPTNewChatURL(s.chatURL), s.chatURL}
+	for _, target := range targets {
+		fmt.Fprintf(os.Stderr, "Opening %s…\n", target)
+		if err := chromedp.Run(s.ctx, chromedp.Navigate(target)); err != nil {
+			return err
+		}
+		if err := chromedp.Run(s.ctx, chromedp.Sleep(2*time.Second)); err != nil {
+			return err
+		}
+		if err := tryActivateCustomGPT(s.ctx, gptPrefix); err != nil {
+			return err
+		}
+		ok, err := isOnCustomGPTPath(s.ctx, gptPrefix)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return nil
+		}
+	}
+	return ensureCustomGPTPage(s.ctx, s.chatURL, gptPrefix)
 }
 
 func (s *chatSession) close() {
@@ -329,16 +836,19 @@ func (s *chatSession) prepareForPrompt() error {
 	}
 	fmt.Fprintln(os.Stderr, "Starting a fresh chat (last reply was large)...")
 	s.lastPeak = 0
-	if err := chromedp.Run(s.ctx, chromedp.Navigate(`https://chatgpt.com`)); err != nil {
+	if err := chromedp.Run(s.ctx, chromedp.Navigate(s.chatURL)); err != nil {
 		return err
 	}
-	return waitForChatReady(s.ctx)
+	return waitForChatReady(s.ctx, s.chatURL)
 }
 
 func runOneTurn(s *chatSession, prompt string) {
-	fmt.Printf("[Thinking...]\n\n")
+	fmt.Println("[Thinking...]")
 
 	if err := s.prepareForPrompt(); err != nil {
+		fatalChatErr(err)
+	}
+	if err := ensureCustomGPTPage(s.ctx, s.chatURL, customGPTPathPrefix(s.chatURL)); err != nil {
 		fatalChatErr(err)
 	}
 
@@ -351,6 +861,7 @@ func runOneTurn(s *chatSession, prompt string) {
 	if err != nil {
 		fatalChatErr(err)
 	}
+	fmt.Println()
 	fmt.Println(string(result))
 }
 
@@ -402,7 +913,7 @@ func fatalChatErr(err error) {
 		return
 	}
 	if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "browser disconnected") {
-		log.Fatal("browser session ended unexpectedly (Chrome disconnected); restart chatbang and try again")
+		log.Fatal("browser session ended unexpectedly (Chrome disconnected); restart chatbang-pro and try again")
 	}
 	log.Fatal(err)
 }
@@ -411,41 +922,40 @@ type responseStatus struct {
 	Generating bool   `json:"generating"`
 	Len        int    `json:"len"`
 	Tail       string `json:"tail"`
+	NodeCount  int    `json:"nodeCount"`
 }
 
 func (s responseStatus) signature() string {
 	return fmt.Sprintf("%d:%s", s.Len, s.Tail)
 }
 
-func thresholdsForLen(contentLen int) (stableNeeded, idleNeeded int, confirmWait, pollWait time.Duration) {
+func completionThresholds(contentLen int) (stableNeeded int, confirmWait time.Duration) {
 	switch {
 	case contentLen > 20000:
-		return 14, 10, 10 * time.Second, 5 * time.Second
+		return stablePollsLarge, confirmDelayLarge
 	case contentLen > 8000:
-		return 10, 7, 8 * time.Second, 4 * time.Second
-	case contentLen > 3000:
-		return 8, 6, 6 * time.Second, 3 * time.Second
+		return stablePollsLarge, confirmDelayLarge
 	default:
-		return stablePolls, doneIdlePolls, confirmDelay, pollInterval
+		return stablePollsDefault, confirmDelayDefault
 	}
 }
 
-func pollResponseStatus(ctx context.Context, pollWait time.Duration) (responseStatus, error) {
+func evaluateResponseStatus(ctx context.Context) (responseStatus, error) {
 	statusJS := `(() => {
+		` + jsIsStreaming + `
 		if (document.querySelector('[data-testid="stop-button"]')) return {generating: true};
 		` + jsAssistantNodes + `
-		if (!nodes.length) return {generating: true};
-		const tc = nodes[nodes.length - 1].textContent || "";
+		if (!nodes.length) return {generating: true, nodeCount: 0};
+		const last = nodes[nodes.length - 1];
+		if (isStillStreaming(last)) return {generating: true, nodeCount: nodes.length};
+		const tc = last.textContent || "";
 		const len = tc.length;
-		if (!len) return {generating: true};
-		return {generating: false, len: len, tail: tc.substring(len - 400)};
+		if (!len) return {generating: true, nodeCount: nodes.length};
+		return {generating: false, len: len, tail: tc.substring(len - 400), nodeCount: nodes.length};
 	})()`
 
 	var status responseStatus
-	err := chromedp.Run(ctx,
-		chromedp.Sleep(pollWait),
-		chromedp.Evaluate(statusJS, &status),
-	)
+	err := chromedp.Run(ctx, chromedp.Evaluate(statusJS, &status))
 	return status, err
 }
 
@@ -533,19 +1043,33 @@ func maybeSavePartial(ctx context.Context, statusLen int, lastPartial *string, l
 	}
 }
 
+func responseStarted(baseline responseStatus, status responseStatus) bool {
+	if status.Generating {
+		return true
+	}
+	if status.NodeCount > baseline.NodeCount {
+		return true
+	}
+	if status.Len > 0 && status.signature() != baseline.signature() {
+		return true
+	}
+	return false
+}
+
 func waitForResponse(ctx context.Context) ([]byte, int, error) {
 	deadline := time.Now().Add(responseTimeout)
+	baseline, _ := evaluateResponseStatus(ctx)
+
 	var lastSig string
 	var lastPartial string
 	var lastFetch time.Time
-	var sawGenerating bool
-	var idleAfterGen int
+	var started bool
 	var stableCount int
 	var peakLen int
 
 	returnPartial := func(warn string) ([]byte, int, error) {
 		if lastPartial == "" {
-			return nil, peakLen, fmt.Errorf("browser disconnected before any response was captured; restart chatbang")
+			return nil, peakLen, fmt.Errorf("browser disconnected before any response was captured; restart chatbang-pro")
 		}
 		fmt.Fprintln(os.Stderr, warn)
 		out, err := renderResponse(lastPartial)
@@ -557,13 +1081,12 @@ func waitForResponse(ctx context.Context) ([]byte, int, error) {
 			return returnPartial("Warning: browser disconnected; showing last captured text.")
 		}
 
-		stableNeeded, idleNeeded, confirmWait, pollWait := thresholdsForLen(peakLen)
-
-		status, err := pollResponseStatus(ctx, pollWait)
+		status, err := evaluateResponseStatus(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return returnPartial("Warning: browser disconnected; showing last captured text.")
 			}
+			time.Sleep(pollIntervalDone)
 			continue
 		}
 
@@ -571,51 +1094,51 @@ func waitForResponse(ctx context.Context) ([]byte, int, error) {
 			peakLen = status.Len
 		}
 
-		if status.Generating {
-			sawGenerating = true
-			idleAfterGen = 0
-			stableCount = 0
-			continue
-		}
-
-		if status.Len == 0 {
-			idleAfterGen = 0
-			stableCount = 0
-			continue
-		}
-
-		if sawGenerating {
-			idleAfterGen++
-			if idleAfterGen < idleNeeded {
-				stableCount = 0
+		pollSleep := pollIntervalDone
+		if !started {
+			if responseStarted(baseline, status) {
+				started = true
+			} else {
+				time.Sleep(pollIntervalDone)
 				continue
 			}
 		}
 
-		sig := status.signature()
-		if sig == lastSig {
-			stableCount++
-			if stableCount >= stableNeeded {
-				text, done, err := confirmFullResponse(ctx, confirmWait)
-				if err != nil {
-					return returnPartial("Warning: could not fetch full reply; showing last captured text.")
-				}
-				if !done {
-					lastSig = fmt.Sprintf("%d:%s", len(text), text[max(0, len(text)-400):])
-					stableCount = 0
-					if len(text) > len(lastPartial) {
-						lastPartial = text
-					}
-					continue
-				}
-				out, err := renderResponse(text)
-				return out, max(peakLen, len(text)), err
-			}
-		} else {
-			lastSig = sig
+		if status.Generating {
 			stableCount = 0
-			maybeSavePartial(ctx, status.Len, &lastPartial, &lastFetch)
+			pollSleep = pollIntervalActive
+		} else if status.Len == 0 {
+			stableCount = 0
+		} else if started {
+			stableNeeded, confirmWait := completionThresholds(peakLen)
+			sig := status.signature()
+			if sig == lastSig {
+				stableCount++
+				if stableCount >= stableNeeded {
+					text, done, err := confirmFullResponse(ctx, confirmWait)
+					if err != nil {
+						return returnPartial("Warning: could not fetch full reply; showing last captured text.")
+					}
+					if !done {
+						lastSig = fmt.Sprintf("%d:%s", len(text), text[max(0, len(text)-400):])
+						stableCount = 0
+						if len(text) > len(lastPartial) {
+							lastPartial = text
+						}
+						time.Sleep(pollIntervalDone)
+						continue
+					}
+					out, err := renderResponse(text)
+					return out, max(peakLen, len(text)), err
+				}
+			} else {
+				lastSig = sig
+				stableCount = 1
+				maybeSavePartial(ctx, status.Len, &lastPartial, &lastFetch)
+			}
 		}
+
+		time.Sleep(pollSleep)
 	}
 
 	if lastPartial != "" {
@@ -637,10 +1160,10 @@ func loginProfile(defaultBrowser string, profileDir string) {
 	ctx, ctxCancel := chromedp.NewContext(allocatorCtx, chromedp.WithErrorf(suppressChromedpNoise))
 	defer ctxCancel()
 
-	if err := chromedp.Run(ctx, chromedp.Navigate(`https://chatgpt.com`)); err != nil {
+	if err := chromedp.Run(ctx, chromedp.Navigate(chatURL)); err != nil {
 		log.Fatalf("Could not open ChatGPT in browser: %v", err)
 	}
-	if err := waitForChatReady(ctx); err != nil {
+	if err := waitForChatReady(ctx, chatURL); err != nil {
 		log.Fatalf("ChatGPT did not load: %v", err)
 	}
 

@@ -6,6 +6,7 @@ go.sum
 # executable
 main
 chatbang
+chatbang-pro
 
 vendor/
 
