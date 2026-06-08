@@ -168,6 +168,8 @@ type cliOptions struct {
 	headless      bool
 	temporaryChat bool
 	customGPT     string
+	message       string
+	messageFlag   bool
 }
 
 func flagValue(args []string, i int) (string, int, bool) {
@@ -204,11 +206,21 @@ func parseCLI(args []string, headless bool) cliOptions {
 			}
 			setCustomGPT(&opts, value)
 			i = next
+		case "--message", "-m":
+			opts.messageFlag = true
+			value, next, ok := flagValue(args, i)
+			if ok {
+				opts.message = value
+				i = next
+			}
 		default:
 			if value, ok := strings.CutPrefix(arg, "--gpt="); ok {
 				setCustomGPT(&opts, value)
 			} else if value, ok := strings.CutPrefix(arg, "--custom-gpt="); ok {
 				setCustomGPT(&opts, value)
+			} else if value, ok := strings.CutPrefix(arg, "--message="); ok {
+				opts.messageFlag = true
+				opts.message = value
 			}
 		}
 	}
@@ -249,7 +261,30 @@ func normalizeCustomGPTURL(input string) (string, error) {
 		return "", fmt.Errorf("custom GPT URL must look like https://chatgpt.com/g/g-...")
 	}
 
-	return "https://chatgpt.com" + path, nil
+	result := "https://chatgpt.com" + path
+	if u.Query().Get("temporary-chat") == "true" {
+		result = withTemporaryChat(result)
+	}
+	return result, nil
+}
+
+func withTemporaryChat(chatURL string) string {
+	u, err := url.Parse(chatURL)
+	if err != nil {
+		return chatURL
+	}
+	q := u.Query()
+	q.Set("temporary-chat", "true")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func isTemporaryChatURL(chatURL string) bool {
+	u, err := url.Parse(chatURL)
+	if err != nil {
+		return false
+	}
+	return u.Query().Get("temporary-chat") == "true"
 }
 
 func customGPTPathPrefix(chatURL string) string {
@@ -261,14 +296,6 @@ func customGPTPathPrefix(chatURL string) string {
 		return ""
 	}
 	return strings.TrimSuffix(u.Path, "/")
-}
-
-func customGPTNewChatURL(chatURL string) string {
-	gptPrefix := customGPTPathPrefix(chatURL)
-	if gptPrefix == "" {
-		return chatURL
-	}
-	return "https://chatgpt.com" + gptPrefix + "/c/new"
 }
 
 func isOnCustomGPTPathJS(gptPrefix string) (string, error) {
@@ -313,30 +340,35 @@ func ensureCustomGPTPage(ctx context.Context, chatURL, gptPrefix string) error {
 	}
 
 	fmt.Fprintln(os.Stderr, "ChatGPT left the custom GPT — reopening…")
-	for _, target := range []string{customGPTNewChatURL(chatURL), chatURL} {
-		if err := chromedp.Run(ctx, chromedp.Navigate(target)); err != nil {
-			return err
-		}
-		if err := chromedp.Run(ctx, chromedp.Sleep(2*time.Second)); err != nil {
-			return err
-		}
-		if err := tryActivateCustomGPT(ctx, gptPrefix); err != nil {
-			return err
-		}
-		ok, err := isOnCustomGPTPath(ctx, gptPrefix)
-		if err != nil {
-			return err
-		}
-		if ok {
-			return nil
-		}
+	if err := chromedp.Run(ctx, chromedp.Navigate(chatURL)); err != nil {
+		return err
+	}
+	if err := chromedp.Run(ctx, chromedp.Sleep(500*time.Millisecond)); err != nil {
+		return err
+	}
+	if err := tryActivateCustomGPT(ctx, gptPrefix); err != nil {
+		return err
+	}
+	ok, err = isOnCustomGPTPath(ctx, gptPrefix)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
 	}
 	return nil
 }
 
 func resolveChatURL(temporaryChat bool, customGPT string) (string, error) {
 	if customGPT != "" {
-		return normalizeCustomGPTURL(customGPT)
+		resolved, err := normalizeCustomGPTURL(customGPT)
+		if err != nil {
+			return "", err
+		}
+		if temporaryChat {
+			return withTemporaryChat(resolved), nil
+		}
+		return resolved, nil
 	}
 	if temporaryChat {
 		return tempChatURL, nil
@@ -365,8 +397,9 @@ Type a prompt at `+"`> `"+`, wait for `+"`[Thinking...]`"+`, then read the reply
 | `+"`--config`"+` | Open ChatGPT in a visible browser to log in or refresh your session |
 | `+"`--headless`"+` | Force headless mode (browser runs in the background) |
 | `+"`--no-headless`"+` | Show the browser window while chatting |
-| `+"`--temporary-chat`"+`, `+"`--temp`"+` | Use [temporary chat](%s) (not saved to history) |
+| `+"`--temporary-chat`"+`, `+"`--temp`"+` | Use [temporary chat](%s) (works with `+"`--gpt`"+` too) |
 | `+"`--gpt`"+`, `+"`--custom-gpt`"+`, `+"`-g`"+` | Chat with a [custom GPT](https://chatgpt.com/gpts) (full URL, `+"`/g/g-...`"+` path, or `+"`g-...`"+` id) |
+| `+"`--message`"+`, `+"`-m`"+` | Send one prompt, print the reply, and exit (non-interactive) |
 
 ## First-time setup
 
@@ -398,7 +431,10 @@ chatbang-pro --no-headless            # show the browser while chatting
 chatbang-pro --temporary-chat         # private temporary chat session
 chatbang-pro --temp --no-headless     # visible temporary chat
 chatbang-pro --gpt https://chatgpt.com/g/g-81BdggBV3-website-mobile-app-builder-ui-ux-web-design
+chatbang-pro --gpt https://chatgpt.com/g/g-xxx --temp
 chatbang-pro -g g-81BdggBV3-website-mobile-app-builder-ui-ux-web-design
+chatbang-pro --gpt https://chatgpt.com/g/g-xxx --message "كيفك"
+chatbang-pro -m "What is 2+2?"
 chatbang-pro --config                 # log in / refresh browser profile
 `+"```"+`
 
@@ -479,11 +515,9 @@ func main() {
 		log.Fatal(err)
 	}
 	if cli.customGPT != "" {
-		if cli.temporaryChat {
-			fmt.Fprintln(os.Stderr, "Note: --temp is ignored when --gpt is set.")
-		}
 		fmt.Fprintf(os.Stderr, "Custom GPT: %s\n", chatTarget)
-	} else if cli.temporaryChat {
+	}
+	if isTemporaryChatURL(chatTarget) {
 		fmt.Fprintln(os.Stderr, "Temporary chat mode — conversations are not saved to history.")
 	}
 
@@ -494,6 +528,14 @@ func main() {
 		log.Fatal(err)
 	}
 	defer sess.close()
+
+	if cli.messageFlag && strings.TrimSpace(cli.message) == "" {
+		log.Fatal("--message requires a value")
+	}
+	if msg := strings.TrimSpace(cli.message); msg != "" {
+		runOneTurn(sess, msg)
+		return
+	}
 
 	fmt.Fprintln(os.Stderr, "Ready — start chatting below.")
 	promptLoop(sess)
@@ -668,7 +710,7 @@ func customGPTActivateJS(gptPrefix string) (string, error) {
 		const p = location.pathname.replace(/\/$/, '');
 		if (!p || p === '/') return false;
 		if (p !== expected && !p.startsWith(expected + '/')) return false;
-		if (document.querySelector('#prompt-textarea') && p.startsWith(expected + '/')) return true;
+		if (document.querySelector('#prompt-textarea')) return true;
 		if (p !== expected) return false;
 
 		const buttons = document.querySelectorAll('button, a[role="button"]');
@@ -695,31 +737,13 @@ func tryActivateCustomGPT(ctx context.Context, gptPrefix string) error {
 	if err != nil {
 		return err
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		var done bool
-		if err := chromedp.Run(ctx, chromedp.Evaluate(clickJS, &done)); err != nil {
-			return err
-		}
-		if done {
-			return nil
-		}
-		time.Sleep(pollIntervalActive)
-	}
-	return nil
+	var done bool
+	return chromedp.Run(ctx, chromedp.Evaluate(clickJS, &done))
 }
 
 func waitForChatReady(ctx context.Context, chatURL string) error {
 	// Must use the tab context (not a short-lived child) or Chrome dies when the child is canceled.
 	gptPrefix := customGPTPathPrefix(chatURL)
-	if gptPrefix != "" {
-		if err := tryActivateCustomGPT(ctx, gptPrefix); err != nil {
-			return err
-		}
-	}
 
 	pathCheckJS, err := isOnCustomGPTPathJS(gptPrefix)
 	if err != nil {
@@ -750,7 +774,7 @@ func waitForChatReady(ctx context.Context, chatURL string) error {
 			return err
 		}
 		if ready {
-			return chromedp.Run(ctx, chromedp.Sleep(1*time.Second))
+			return chromedp.Run(ctx, chromedp.Sleep(500*time.Millisecond))
 		}
 		if gptPrefix != "" {
 			if err := tryActivateCustomGPT(ctx, gptPrefix); err != nil {
@@ -761,7 +785,7 @@ func waitForChatReady(ctx context.Context, chatURL string) error {
 			fmt.Fprintln(os.Stderr, "Still waiting for chat to start…")
 			nextNotice = time.Now().Add(10 * time.Second)
 		}
-		time.Sleep(pollIntervalActive)
+		time.Sleep(pollIntervalDone)
 	}
 	return fmt.Errorf("chatgpt.com did not become ready within %s", navTimeout)
 }
@@ -771,8 +795,8 @@ func (s *chatSession) openTab() error {
 		s.ctxCancel()
 	}
 	s.ctx, s.ctxCancel = chromedp.NewContext(s.allocCtx, chromedp.WithErrorf(suppressChromedpNoise))
-	if gptPrefix := customGPTPathPrefix(s.chatURL); gptPrefix != "" {
-		if err := s.openCustomGPT(gptPrefix); err != nil {
+	if customGPTPathPrefix(s.chatURL) != "" {
+		if err := s.openCustomGPT(); err != nil {
 			return err
 		}
 	} else {
@@ -785,28 +809,9 @@ func (s *chatSession) openTab() error {
 	return waitForChatReady(s.ctx, s.chatURL)
 }
 
-func (s *chatSession) openCustomGPT(gptPrefix string) error {
-	targets := []string{customGPTNewChatURL(s.chatURL), s.chatURL}
-	for _, target := range targets {
-		fmt.Fprintf(os.Stderr, "Opening %s…\n", target)
-		if err := chromedp.Run(s.ctx, chromedp.Navigate(target)); err != nil {
-			return err
-		}
-		if err := chromedp.Run(s.ctx, chromedp.Sleep(2*time.Second)); err != nil {
-			return err
-		}
-		if err := tryActivateCustomGPT(s.ctx, gptPrefix); err != nil {
-			return err
-		}
-		ok, err := isOnCustomGPTPath(s.ctx, gptPrefix)
-		if err != nil {
-			return err
-		}
-		if ok {
-			return nil
-		}
-	}
-	return ensureCustomGPTPage(s.ctx, s.chatURL, gptPrefix)
+func (s *chatSession) openCustomGPT() error {
+	fmt.Fprintf(os.Stderr, "Opening %s…\n", s.chatURL)
+	return chromedp.Run(s.ctx, chromedp.Navigate(s.chatURL))
 }
 
 func (s *chatSession) close() {
@@ -843,7 +848,7 @@ func (s *chatSession) prepareForPrompt() error {
 }
 
 func runOneTurn(s *chatSession, prompt string) {
-	fmt.Println("[Thinking...]")
+	fmt.Fprintln(os.Stderr, "[Thinking...]")
 
 	if err := s.prepareForPrompt(); err != nil {
 		fatalChatErr(err)
