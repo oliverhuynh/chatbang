@@ -1,8 +1,5 @@
 go.work
 go.work.sum
-
-go.sum
-
 # executable
 main
 chatbang

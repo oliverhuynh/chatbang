@@ -30,6 +30,7 @@ if command -v git >/dev/null 2>&1 && git -C "$ROOT" rev-parse --git-dir >/dev/nu
 fi
 
 LDFLAGS="-s -w -X main.version=${VERSION}"
+BUILD_PKG="./cmd/chatbang-pro"
 
 echo "==> go version: $(go version)"
 echo "==> module:     $(awk '/^module /{print $2}' go.mod)"
@@ -37,7 +38,7 @@ echo "==> version:    ${VERSION}"
 echo "==> output:     ${ROOT}/${OUTPUT}"
 
 go mod download
-go build -ldflags "${LDFLAGS}" -o "${OUTPUT}" .
+go build -ldflags "${LDFLAGS}" -o "${OUTPUT}" "${BUILD_PKG}"
 chmod +x "${OUTPUT}"
 go vet ./...
 

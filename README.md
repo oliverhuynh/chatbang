@@ -48,7 +48,7 @@ go mod tidy
 Or manually:
 
 ```bash
-go build -o chatbang-pro .
+go build -o chatbang-pro ./cmd/chatbang-pro
 sudo mv chatbang-pro /usr/bin/chatbang-pro
 ```
 
@@ -110,6 +110,20 @@ Use `--gpt`, `--custom-gpt`, or `-g` with a full custom GPT link, a `/g/g-...` p
 - Very long answers (big lists, long text) can take several minutes; the tool waits up to 15 minutes per reply.
 - After a large reply (>6000 characters), the next prompt starts a **fresh chat** automatically so Chrome stays stable.
 - Follow-up questions that refer to the previous answer should be in the **same** prompt, or ask again in one message, because a fresh chat does not see earlier turns.
+
+## Project layout
+
+```
+cmd/chatbang-pro/     CLI entry point (main)
+internal/
+  app/                wiring: config load, session start, prompt loop
+  cli/                flag parsing
+  config/             browser detection and config file
+  chaturl/            ChatGPT / custom GPT URL helpers
+  help/               --help output
+  prompt/             interactive terminal input
+  session/            chromedp browser automation and reply polling
+```
 
 ## How it works
 
