@@ -27,23 +27,7 @@ Credit for the original design and article: [How I Made ChatGPT Run on My Termin
 
 ## Installation
 
-Install steps (latest binary URL, `chmod`, and first-run setup) are on the **[Releases](https://github.com/KaraBala10/chatbang-pro/releases)** page for each version.
-
-### Install from source
-
-```bash
-git clone https://github.com/KaraBala10/chatbang-pro.git
-cd chatbang-pro
-go mod tidy
-./build.sh
-```
-
-Or manually:
-
-```bash
-go build -o chatbang-pro ./cmd/chatbang-pro
-sudo mv chatbang-pro /usr/bin/chatbang-pro
-```
+Download and install from the **[Releases](https://github.com/KaraBala10/chatbang-pro/releases)** page — each version includes step-by-step instructions.
 
 ## Requirements
 
@@ -55,8 +39,6 @@ curl -fL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.d
 
 sudo apt install /tmp/google-chrome-stable_current_amd64.deb
 ```
-
-- Go 1.24+ (only if building from source).
 
 ## Configuration
 
