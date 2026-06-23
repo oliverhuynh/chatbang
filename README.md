@@ -1,59 +1,62 @@
-# Chatbang
+# ⚡ Chatbang Pro
 
-`Chatbang` is a simple tool to access ChatGPT from the terminal, without needing for an API key.
+> **ChatGPT from your terminal** — the full web experience. No API key. No quotas. No limits.
 
-![Chatbang](./assets/chatbang.png)
+Chatbang Pro automates the official [ChatGPT](https://chatgpt.com) app in Chrome — every model, custom GPT, and feature OpenAI ships, from a fast, scriptable CLI.
 
-## Installation
+| | |
+|:---:|:---:|
+| 🔑 **No API key** | 🆓 **No quotas** |
+| 🧠 **Full ChatGPT** | ⚡ **Terminal-native** |
+| 🛡️ **Stable sessions** | 🌍 **Unicode & RTL** |
 
-On Linux:
+Enhanced, actively maintained fork of [chatbang](https://github.com/ahmedhosssam/chatbang) — built for power users who want reliability, long replies, and headless operation.
+
+---
+
+## 📦 Installation
+
+Download and install from the **[Releases](https://github.com/KaraBala10/chatbang-pro/releases)** page.
+
+## 🌐 Requirements
+
+**Google Chrome** must be installed. On Debian/Ubuntu amd64:
 
 ```bash
-curl -L https://github.com/ahmedhosssam/chatbang/releases/latest/download/chatbang -o chatbang
-chmod +x chatbang
-sudo mv chatbang /usr/bin/chatbang
+curl -fL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+  -o /tmp/google-chrome-stable_current_amd64.deb
+
+sudo apt install /tmp/google-chrome-stable_current_amd64.deb
 ```
 
-## Install from source:
+## ⚙️ Setup
 
 ```bash
-git clone git@github.com:ahmedhosssam/chatbang.git
-cd chatbang
-go mod tidy
-go build main.go
-sudo mv main /usr/bin/chatbang
+chatbang-pro --config
 ```
 
-## Configuration
+Log in to ChatGPT in the browser window, then press **Enter** in the terminal.
 
-Note: You need to execute `chatbang --config` at least once to create the config file in the directory `$HOME/.config/chatbang`.
+Optional config at `$HOME/.config/chatbang/chatbang`:
 
-`Chatbang` requires a Chromium-based browser (e.g. Chrome, Edge, Brave) to work, so you need to have one installed. And then make sure that the config file points to the right path of your chosen browser in the default config path for `Chatbang`: `$HOME/.config/chatbang/chatbang`.
-
-It's default is:
 ```
 browser=/usr/bin/google-chrome
+headless=true
 ```
 
-Change it to the right path of your favorite Chromium-based browser.
+## 💬 Usage
 
-Note: `Chatbang` doesn't work when the browser is installed with `Snap`, the only option right now is to install it in `/bin` or `/usr/bin`.
-
-Then, you need to log in to ChatGPT in `Chatbang`'s Chromium session, so you need to do:
 ```bash
-chatbang --config
-```
-That will open `Chatbang`'s Chromium session on ChatGPT's website, log in with your account.
-
-Then, you will need to allow the clipboard permission for ChatGPT's website (on the same session).
-
-## Usage
-
-It's very simple, just type `chatbang` in the terminal.
-```bash
-chatbang
+chatbang-pro              # 🚀 start chat
+chatbang-pro --config     # 🔐 refresh login
+chatbang-pro -g g-XXXX    # 🎯 custom GPT (full URL or g-... id)
+chatbang-pro --help       # 📖 full CLI reference (-h)
 ```
 
-## How it works?
+Type `exit` or `quit` to leave. Run `chatbang-pro --help` for all flags and options.
 
-Read that article: [https://ahmedhosssam.github.io/posts/chatbang/](https://ahmedhosssam.github.io/posts/chatbang/)
+---
+
+<p align="center">
+  <strong>Built for the terminal. Powered by ChatGPT.</strong> 🖥️✨
+</p>

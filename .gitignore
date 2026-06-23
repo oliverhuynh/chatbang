@@ -1,11 +1,9 @@
 go.work
 go.work.sum
-
-go.sum
-
-# executable
-main
-chatbang
+# executables (repo root only — do not match cmd/chatbang-pro/)
+/main
+/chatbang
+/chatbang-pro
 
 vendor/
 
