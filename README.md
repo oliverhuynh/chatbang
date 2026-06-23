@@ -18,6 +18,16 @@ Enhanced, actively maintained fork of [chatbang](https://github.com/ahmedhosssam
 
 Download and install from the **[Releases](https://github.com/KaraBala10/chatbang-pro/releases)** page.
 
+## 📦 Install from source:
+
+```
+git clone git@github.com:ahmedhosssam/chatbang.git
+cd chatbang
+go mod tidy
+go build ./cmd/chatbang-pro/main.go
+sudo mv main /usr/bin/chatbang
+```
+
 ## 🌐 Requirements
 
 **Google Chrome** must be installed. On Debian/Ubuntu amd64:
