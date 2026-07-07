@@ -53,9 +53,11 @@ func New(browser, profileDir string, headless bool, chatTarget string, keepBrows
 			s.allocCtx = allocCtx
 			s.allocCancel = allocCancel
 			fmt.Fprintln(os.Stderr, "Reusing background browser…")
-			if err := s.openTab(); err != nil {
-				allocCancel()
-				return nil, err
+			if !s.tryReuseTab(chatTarget) {
+				if err := s.openTab(); err != nil {
+					allocCancel()
+					return nil, err
+				}
 			}
 			return s, nil
 		}
@@ -204,6 +206,69 @@ func (s *Session) openCustomGPT() error {
 	return chromedp.Run(s.ctx, chromedp.Navigate(s.chatURL))
 }
 
+// tryReuseTab looks for an existing ChatGPT tab in the background browser
+// and attaches to it instead of opening a new tab. Returns true on success.
+func (s *Session) tryReuseTab(chatTarget string) bool {
+	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/json", keepBrowserDebugPort))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	var targets []struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+		URL  string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&targets); err != nil {
+		return false
+	}
+
+	normalizedTarget := strings.TrimRight(chatTarget, "/")
+	for _, t := range targets {
+		if t.Type != "page" {
+			continue
+		}
+		normalizedURL := strings.TrimRight(t.URL, "/")
+
+		// Match criteria:
+		// 1. Conversation URL (/c/xxx) or custom GPT (/g/g-xxx) — match exactly
+		// 2. Default ChatGPT — any page containing chatgpt.com
+		var match bool
+		if strings.Contains(normalizedTarget, "/c/") || strings.Contains(normalizedTarget, "/g/") {
+			match = normalizedURL == normalizedTarget
+		} else {
+			match = strings.Contains(normalizedURL, "chatgpt.com")
+		}
+		if !match {
+			continue
+		}
+
+		// Found a reusable tab — attach to it.
+		if s.ctxCancel != nil {
+			s.ctxCancel()
+		}
+		s.ctx, s.ctxCancel = chromedp.NewContext(s.allocCtx,
+			chromedp.WithTargetID(target.ID(t.ID)),
+			chromedp.WithErrorf(suppressChromedpNoise))
+
+		// Navigate if the tab isn't already on the target URL.
+		if normalizedURL != normalizedTarget {
+			if err := chromedp.Run(s.ctx, chromedp.Navigate(chatTarget)); err != nil {
+				s.ctxCancel()
+				return false
+			}
+		}
+		if err := waitForChatReady(s.ctx, chatTarget); err != nil {
+			s.ctxCancel()
+			return false
+		}
+		fmt.Fprintln(os.Stderr, "Reusing existing tab…")
+		return true
+	}
+	return false
+}
+
 // findBrowserWSURL polls the browser DevTools endpoint until it responds
 // with a valid WebSocket debugger URL or the timeout expires.
 func findBrowserWSURL(port int, timeout time.Duration) (string, error) {
@@ -295,7 +360,23 @@ func submitPrompt(ctx context.Context, prompt string) error {
 		// Activate tab before clicking submit -- background tab may defer
 		// React state updates, leaving the submit button disabled.
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			return target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
+			c := chromedp.FromContext(ctx)
+			currentID := c.Target.TargetID
+
+			if err := target.ActivateTarget(currentID).Do(ctx); err != nil {
+				return err
+			}
+			// Close other page tabs to reduce memory (keep-browser mode).
+			infos, err := target.GetTargets().Do(ctx)
+			if err != nil {
+				return err
+			}
+			for _, info := range infos {
+				if info.TargetID != currentID && info.Type == "page" {
+					_ = target.CloseTarget(info.TargetID).Do(ctx)
+				}
+			}
+			return nil
 		}),
 		chromedp.Click(`#composer-submit-button`, chromedp.ByID),
 	)
