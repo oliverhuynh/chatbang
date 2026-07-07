@@ -82,3 +82,37 @@ func TestChatCompletionsRejectsStream(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestModelsHandler(t *testing.T) {
+	handler := NewHandler(AskFunc(func(prompt string) (string, error) {
+		t.Fatalf("asker should not be called")
+		return "", nil
+	}))
+
+	for _, path := range []string{"/v1/models", "/models"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+
+		mux := http.NewServeMux()
+		handler.Register(mux)
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s", path, rec.Code, rec.Body.String())
+		}
+
+		var resp modelsResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("%s unmarshal: %v", path, err)
+		}
+		if resp.Object != "list" {
+			t.Fatalf("%s object = %q", path, resp.Object)
+		}
+		if len(resp.Data) == 0 {
+			t.Fatalf("%s data empty", path)
+		}
+		if resp.Data[0].Object != "model" {
+			t.Fatalf("%s first object = %q", path, resp.Data[0].Object)
+		}
+	}
+}

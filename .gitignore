@@ -13,3 +13,4 @@ direnv/
 tasks
 AGENTS.md
 .codex
+.env

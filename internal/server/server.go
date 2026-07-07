@@ -38,6 +38,18 @@ type chatCompletionResponse struct {
 	Usage   chatCompletionUsage    `json:"usage"`
 }
 
+type modelsResponse struct {
+	Object string      `json:"object"`
+	Data   []modelInfo `json:"data"`
+}
+
+type modelInfo struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
 type chatCompletionChoice struct {
 	Index        int                   `json:"index"`
 	Message      chatCompletionMessage `json:"message"`
@@ -72,6 +84,15 @@ func NewHandler(a asker) *Handler {
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/chat/completions", h.handleChatCompletions)
+	mux.HandleFunc("/v1/models", h.handleModels)
+	mux.HandleFunc("/models", h.handleModels)
+}
+
+var supportedModels = []string{
+	"gpt-4o",
+	"gpt-4o-mini",
+	"gpt-4.1",
+	"gpt-4.1-mini",
 }
 
 func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +142,28 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		Usage: chatCompletionUsage{},
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "invalid_request_error", "", "method not allowed")
+		return
+	}
+
+	models := make([]modelInfo, 0, len(supportedModels))
+	for _, id := range supportedModels {
+		models = append(models, modelInfo{
+			ID:      id,
+			Object:  "model",
+			Created: 0,
+			OwnedBy: "openai",
+		})
+	}
+
+	writeJSON(w, http.StatusOK, modelsResponse{
+		Object: "list",
+		Data:   models,
+	})
 }
 
 func flattenMessages(messages []chatRequestMessage) (string, error) {

@@ -4,6 +4,8 @@
 `--server` runs a local HTTP server that exposes:
 
 - `POST /v1/chat/completions`
+- `GET /v1/models`
+- `GET /models`
 
 The server is backed by the existing ChatGPT browser automation flow rather than the OpenAI API.
 
@@ -12,6 +14,11 @@ The server is backed by the existing ChatGPT browser automation flow rather than
 - Host: `127.0.0.1`
 - Port: `19999`
 - Full default URL: `http://127.0.0.1:19999/v1/chat/completions`
+
+Model discovery URLs:
+
+- `http://127.0.0.1:19999/v1/models`
+- `http://127.0.0.1:19999/models`
 
 ## CLI flags
 
@@ -53,6 +60,12 @@ Unsupported or intentionally omitted:
 - strict token accounting
 - multi-choice completions
 
+Current limitation:
+
+- `system`, `user`, and `assistant` roles are accepted in the request shape, but role semantics are still approximated by flattening messages into one prompt string.
+- This means `system` is not yet a true privileged instruction channel and `assistant` history is not yet modeled faithfully.
+- Follow-up work is tracked in `tasks/003-role-semantics-support/`.
+
 ## Response shape
 
 The server returns a minimal OpenAI-style chat completion response:
@@ -62,6 +75,8 @@ The server returns a minimal OpenAI-style chat completion response:
 - `finish_reason=stop`
 
 `usage` is present but zero-filled.
+
+For model discovery, the server returns a static OpenAI-style list response with a few common ChatGPT model IDs (`gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-mini`). The list is compatibility-only and is not strict capability gating.
 
 ## Runtime behavior
 
@@ -83,3 +98,4 @@ Repo-local curl helpers:
 - `scripts/test-chat-basic.sh`
 - `scripts/test-chat-system-user.sh`
 - `scripts/test-chat-stream-error.sh`
+- `scripts/test-models.sh`
