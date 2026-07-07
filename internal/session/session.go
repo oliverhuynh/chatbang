@@ -360,28 +360,11 @@ func sessionLocationSnapshot(ctx context.Context) (string, string, error) {
 			if (value.startsWith('/')) return location.origin + value;
 			return "";
 		};
-		const convoRe = /\/(?:g\/g-[^"'\\\s<>]+\/)?c\/[a-zA-Z0-9-]+(?:[?#][^"'\\\s<>]*)?/g;
-		const convoIdRe = /"(?:conversation[_-]?id|conversationId|current_conversation_id|chat_id|chatId)"\s*:\s*"([0-9a-fA-F-]{16,})"/g;
-		const candidates = [];
-		const push = value => {
-			const normalized = normalize(value);
-			if (normalized && normalized.includes('/c/')) candidates.push(normalized);
-		};
-		push(location.href || "");
-		Array.from(document.querySelectorAll('a[href]')).forEach(a => push(a.getAttribute('href') || ""));
-		const stateText = JSON.stringify(history.state || {});
-		const htmlText = document.documentElement ? document.documentElement.innerHTML : "";
-		const scriptText = Array.from(document.scripts || []).map(s => s.textContent || '').join('\n');
-		const storageText = [...Object.values(localStorage || {}), ...Object.values(sessionStorage || {})].join('\n');
-		for (const source of [stateText, htmlText, scriptText, storageText]) {
-			const matches = source.match(convoRe) || [];
-			for (const match of matches) push(match);
-			for (const capture of source.matchAll(convoIdRe)) {
-				const value = capture[1];
-				push('/c/' + value);
-			}
+		const url = normalize(location.href || "");
+		if (url && url.includes("/c/")) {
+			return { url, title: document.title || "" };
 		}
-		return { url: candidates.at(-1) || location.href, title: document.title };
+		return { url: "", title: "" };
 	})()`
 
 	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &snapshot)); err != nil {
