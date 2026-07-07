@@ -32,16 +32,20 @@ type Paths struct {
 	Dir     string
 	File    string
 	Profile string
+	Sessions string
 }
 
 // PathsForHome returns standard chatbang config paths for a home directory.
 func PathsForHome(homeDir string) Paths {
 	dir := filepath.Join(homeDir, ".config", "chatbang")
-	return Paths{
-		Dir:     dir,
-		File:    filepath.Join(dir, "chatbang"),
-		Profile: filepath.Join(dir, "profile_data"),
+	paths := Paths{
+		Dir:      dir,
+		File:     filepath.Join(dir, "chatbang"),
+		Profile:  filepath.Join(dir, "profile_data"),
+		Sessions: filepath.Join(dir, "sessions.json"),
 	}
+	fmt.Fprintf(os.Stderr, "[debug] PathsForHome: Sessions=%q\n", paths.Sessions)
+	return paths
 }
 
 func AllocatorOptions(browserPath, profileDir string, headless bool) []chromedp.ExecAllocatorOption {

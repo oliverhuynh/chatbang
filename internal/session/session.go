@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -25,15 +26,17 @@ type Session struct {
 	ctxCancel   context.CancelFunc
 	chatURL     string
 	lastPeak    int
+	temporary   bool
+	sessionFile string
 }
 
 // New opens a browser session and waits until the chat page is ready.
-func New(browser, profileDir string, headless bool, chatTarget string) (*Session, error) {
+func New(browser, profileDir string, headless bool, chatTarget string, sessionFile string, temporary bool) (*Session, error) {
 	allocCtx, allocCancel := chromedp.NewExecAllocator(
 		context.Background(),
 		config.AllocatorOptions(browser, profileDir, headless)...,
 	)
-	s := &Session{allocCtx: allocCtx, allocCancel: allocCancel, chatURL: chatTarget}
+	s := &Session{allocCtx: allocCtx, allocCancel: allocCancel, chatURL: chatTarget, sessionFile: sessionFile, temporary: temporary}
 	if err := s.openTab(); err != nil {
 		allocCancel()
 		return nil, err
@@ -71,6 +74,7 @@ func (s *Session) RunTurn(prompt string) {
 	if err != nil {
 		fatalChatErr(err)
 	}
+	s.maybeSaveSession()
 	fmt.Print(string(result))
 }
 
@@ -197,6 +201,77 @@ func submitPrompt(ctx context.Context, prompt string) error {
 		chromedp.Sleep(500*time.Millisecond),
 		chromedp.Click(`#composer-submit-button`, chromedp.ByID),
 	)
+}
+
+func (s *Session) maybeSaveSession() {
+	fmt.Fprintf(os.Stderr, "[debug] maybeSaveSession: temporary=%v sessionFile=%q\n", s.temporary, s.sessionFile)
+	if s.sessionFile == "" {
+		fmt.Fprintf(os.Stderr, "[debug] maybeSaveSession: skipping (sessionFile=%q)\n", s.sessionFile)
+		return
+	}
+
+	currentURL, title, ok := currentSessionLocation(s.ctx)
+	fmt.Fprintf(os.Stderr, "[debug] maybeSaveSession: currentSessionLocation returned ok=%v url=%q title=%q\n", ok, currentURL, title)
+	if !ok {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[debug] maybeSaveSession: calling SaveSessionSnapshot\n")
+	if err := SaveSessionSnapshot(s.sessionFile, currentURL, title); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not save session: %v\n", err)
+	}
+	fmt.Fprintf(os.Stderr, "[debug] maybeSaveSession: saved successfully\n")
+}
+
+func currentSessionLocation(ctx context.Context) (string, string, bool) {
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		currentURL, title, err := sessionLocationSnapshot(ctx)
+		fmt.Fprintf(os.Stderr, "[debug] currentSessionLocation: poll url=%q title=%q err=%v\n", currentURL, title, err)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[debug] currentSessionLocation: error, stopping\n")
+			return "", "", false
+		}
+		if u, err := url.Parse(currentURL); err == nil {
+			fmt.Fprintf(os.Stderr, "[debug] currentSessionLocation: parsed path=%q, hasSlashC=%v\n", u.Path, strings.Contains(u.Path, "/c/"))
+			if strings.Contains(u.Path, "/c/") {
+				fmt.Fprintf(os.Stderr, "[debug] currentSessionLocation: found /c/ in path, returning\n")
+				return currentURL, title, true
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[debug] currentSessionLocation: url.Parse error: %v\n", err)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	fmt.Fprintf(os.Stderr, "[debug] currentSessionLocation: timed out after 6s\n")
+	return "", "", false
+}
+
+func sessionLocationSnapshot(ctx context.Context) (string, string, error) {
+	var snapshot struct {
+		URL   string `json:"url"`
+		Title string `json:"title"`
+	}
+	js := `(() => {
+		const normalize = value => {
+			if (!value) return "";
+			if (/^https?:\/\//.test(value)) return value;
+			if (value.startsWith('/')) return location.origin + value;
+			return "";
+		};
+
+		const url = normalize(location.href || "");
+		if (!url || !url.includes("/c/")) {
+			return { url: "", title: "" };
+		}
+		return { url, title: document.title || "" };
+	})()`
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &snapshot)); err != nil {
+		return "", "", err
+	}
+	if snapshot.URL == "" {
+		return "", "", fmt.Errorf("no /c/ URL found in location.href")
+	}
+	return snapshot.URL, snapshot.Title, nil
 }
 
 func fatalChatErr(err error) {

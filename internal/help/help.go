@@ -32,6 +32,8 @@ Type a prompt at `+"`> `"+`, wait for `+"`[Thinking...]`"+`, then read the reply
 | `+"`--no-headless`"+` | Show the browser window while chatting |
 | `+"`--temporary-chat`"+`, `+"`--temp`"+` | Use [temporary chat](%s) (works with `+"`--gpt`"+` too) |
 | `+"`--gpt`"+`, `+"`--custom-gpt`"+`, `+"`-g`"+` | Chat with a [custom GPT](https://chatgpt.com/gpts) (full URL, `+"`/g/g-...`"+` path, or `+"`g-...`"+` id) |
+| `+"`--sessions`"+` | List saved ChatGPT conversation sessions |
+| `+"`--resume`"+` | Resume a saved session by id or `+"`last`"+` |
 | `+"`--message`"+`, `+"`-m`"+` | Send one prompt, print the reply, and exit (non-interactive) |
 
 ## First-time setup
@@ -68,6 +70,8 @@ chatbang-pro --gpt https://chatgpt.com/g/g-xxx --temp
 chatbang-pro -g g-81BdggBV3-website-mobile-app-builder-ui-ux-web-design
 chatbang-pro --gpt https://chatgpt.com/g/g-xxx --message "كيفك"
 chatbang-pro -m "What is 2+2?"
+chatbang-pro --sessions               # list saved sessions
+chatbang-pro --resume last            # resume most recent saved session
 chatbang-pro --config                 # log in / refresh browser profile
 `+"```"+`
 

@@ -78,10 +78,35 @@ func Run(version string, args []string) {
 		return
 	}
 
+	if opts.ListSessions {
+		items, err := session.ListSavedSessions(paths.Sessions)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(items) == 0 {
+			fmt.Println("No saved sessions.")
+			return
+		}
+		for _, item := range items {
+			fmt.Printf("%s\t%s\t%s\t%s\n", item.ID, item.UpdatedAt, item.Title, item.URL)
+		}
+		return
+	}
+
 	headless = opts.Headless
-	chatTarget, err := chaturl.Resolve(opts.TemporaryChat, opts.CustomGPT)
-	if err != nil {
-		log.Fatal(err)
+	var chatTarget string
+	if opts.Resume != "" {
+		item, err := session.ResolveSavedSession(paths.Sessions, opts.Resume)
+		if err != nil {
+			log.Fatal(err)
+		}
+		chatTarget = item.URL
+		fmt.Fprintf(os.Stderr, "Resuming session %s: %s\n", item.ID, item.Title)
+	} else {
+		chatTarget, err = chaturl.Resolve(opts.TemporaryChat, opts.CustomGPT)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 	if opts.CustomGPT != "" {
 		fmt.Fprintf(os.Stderr, "Custom GPT: %s\n", chatTarget)
@@ -92,7 +117,8 @@ func Run(version string, args []string) {
 
 	fmt.Fprintf(os.Stderr, "chatbang-pro %s\n", version)
 	fmt.Fprintln(os.Stderr, "Starting browser and opening ChatGPT…")
-	sess, err := session.New(defaultBrowser, paths.Profile, headless, chatTarget)
+	fmt.Fprintf(os.Stderr, "[debug] app: paths.Sessions=%q paths.Profile=%q IsTemporary=%v\n", paths.Sessions, paths.Profile, chaturl.IsTemporary(chatTarget))
+	sess, err := session.New(defaultBrowser, paths.Profile, headless, chatTarget, paths.Sessions, chaturl.IsTemporary(chatTarget))
 	if err != nil {
 		log.Fatal(err)
 	}

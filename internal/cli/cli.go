@@ -11,6 +11,8 @@ type Options struct {
 	CustomGPT     string
 	Message       string
 	MessageFlag   bool
+	ListSessions  bool
+	Resume        string
 }
 
 func flagValue(args []string, i int) (string, int, bool) {
@@ -40,6 +42,15 @@ func Parse(args []string, headless bool) Options {
 			opts.Headless = false
 		case "--temporary-chat", "--temp":
 			opts.TemporaryChat = true
+		case "--sessions":
+			opts.ListSessions = true
+		case "--resume":
+			value, next, ok := flagValue(args, i)
+			if !ok {
+				continue
+			}
+			opts.Resume = strings.TrimSpace(value)
+			i = next
 		case "--gpt", "--custom-gpt", "-g":
 			value, next, ok := flagValue(args, i)
 			if !ok {
@@ -59,6 +70,8 @@ func Parse(args []string, headless bool) Options {
 				setCustomGPT(&opts, value)
 			} else if value, ok := strings.CutPrefix(arg, "--custom-gpt="); ok {
 				setCustomGPT(&opts, value)
+			} else if value, ok := strings.CutPrefix(arg, "--resume="); ok {
+				opts.Resume = strings.TrimSpace(value)
 			} else if value, ok := strings.CutPrefix(arg, "--message="); ok {
 				opts.MessageFlag = true
 				opts.Message = value
