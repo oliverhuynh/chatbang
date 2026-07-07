@@ -78,6 +78,14 @@ func Run(version string, args []string) {
 		return
 	}
 
+
+	if opts.KillBrowser {
+		if err := session.KillBackgroundBrowser(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	if opts.ListSessions {
 		items, err := session.ListSavedSessions(paths.Sessions)
 		if err != nil {
@@ -116,9 +124,12 @@ func Run(version string, args []string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "chatbang-pro %s\n", version)
-	fmt.Fprintln(os.Stderr, "Starting browser and opening ChatGPT…")
-	fmt.Fprintf(os.Stderr, "[debug] app: paths.Sessions=%q paths.Profile=%q IsTemporary=%v\n", paths.Sessions, paths.Profile, chaturl.IsTemporary(chatTarget))
-	sess, err := session.New(defaultBrowser, paths.Profile, headless, chatTarget, paths.Sessions, chaturl.IsTemporary(chatTarget))
+	if opts.KeepBrowser {
+		fmt.Fprintln(os.Stderr, "Opening ChatGPT with keep-browser mode…")
+	} else {
+		fmt.Fprintln(os.Stderr, "Starting browser and opening ChatGPT…")
+	}
+	sess, err := session.New(defaultBrowser, paths.Profile, headless, chatTarget, opts.KeepBrowser, paths.Sessions, chaturl.IsTemporary(chatTarget))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -134,4 +145,5 @@ func Run(version string, args []string) {
 
 	fmt.Fprintln(os.Stderr, "Ready — start chatting below.")
 	prompt.Loop(cli.IsExitCommand, sess.RunTurn)
+	fmt.Fprintln(os.Stderr, "[debug] Run: prompt.Loop returned, defer sess.Close will run")
 }

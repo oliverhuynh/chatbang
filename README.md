@@ -58,6 +58,8 @@ headless=true
 
 ```bash
 chatbang-pro              # 🚀 start chat
+chatbang-pro --keep-browser           # 🌙 keep Chrome alive and reuse it next run
+chatbang-pro --kill-browser           # 🔫 kill the background Chrome
 chatbang-pro --config     # 🔐 refresh login
 chatbang-pro -g g-XXXX    # 🎯 custom GPT (full URL or g-... id)
 chatbang-pro --help       # 📖 full CLI reference (-h)

@@ -31,6 +31,8 @@ Type a prompt at `+"`> `"+`, wait for `+"`[Thinking...]`"+`, then read the reply
 | `+"`--headless`"+` | Force headless mode (browser runs in the background) |
 | `+"`--no-headless`"+` | Show the browser window while chatting |
 | `+"`--temporary-chat`"+`, `+"`--temp`"+` | Use [temporary chat](%s) (works with `+"`--gpt`"+` too) |
+| `+"`--keep-browser`"+` | Keep the browser running between invocations, reusing it next run |
+| `+"`--kill-browser`"+` | Kill the background browser (started with `+"`--keep-browser`"+`) |
 | `+"`--gpt`"+`, `+"`--custom-gpt`"+`, `+"`-g`"+` | Chat with a [custom GPT](https://chatgpt.com/gpts) (full URL, `+"`/g/g-...`"+` path, or `+"`g-...`"+` id) |
 | `+"`--sessions`"+` | List saved ChatGPT conversation sessions |
 | `+"`--resume`"+` | Resume a saved session by id or `+"`last`"+` |
@@ -70,6 +72,8 @@ chatbang-pro --gpt https://chatgpt.com/g/g-xxx --temp
 chatbang-pro -g g-81BdggBV3-website-mobile-app-builder-ui-ux-web-design
 chatbang-pro --gpt https://chatgpt.com/g/g-xxx --message "كيفك"
 chatbang-pro -m "What is 2+2?"
+chatbang-pro --keep-browser           # keep Chrome alive and reuse it next run
+chatbang-pro --kill-browser            # kill the background browser
 chatbang-pro --sessions               # list saved sessions
 chatbang-pro --resume last            # resume most recent saved session
 chatbang-pro --config                 # log in / refresh browser profile

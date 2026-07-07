@@ -7,6 +7,8 @@ type Options struct {
 	WantConfig    bool
 	WantHelp      bool
 	Headless      bool
+	KeepBrowser   bool
+	KillBrowser   bool
 	TemporaryChat bool
 	CustomGPT     string
 	Message       string
@@ -42,6 +44,10 @@ func Parse(args []string, headless bool) Options {
 			opts.Headless = false
 		case "--temporary-chat", "--temp":
 			opts.TemporaryChat = true
+		case "--keep-browser":
+			opts.KeepBrowser = true
+		case "--kill-browser":
+			opts.KillBrowser = true
 		case "--sessions":
 			opts.ListSessions = true
 		case "--resume":

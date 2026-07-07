@@ -4,14 +4,15 @@ go 1.26
 
 require (
 	github.com/MichaelMure/go-term-markdown v0.1.4
+	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
 	github.com/chromedp/chromedp v0.15.1
+	golang.org/x/net v0.35.0
 	golang.org/x/term v0.43.0
 )
 
 require (
 	github.com/MichaelMure/go-term-text v0.3.1 // indirect
 	github.com/alecthomas/chroma v0.7.1 // indirect
-	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/danwakefield/fnmatch v0.0.0-20160403171240-cbb64ac3d964 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
@@ -31,6 +32,5 @@ require (
 	github.com/rivo/uniseg v0.1.0 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
 	golang.org/x/image v0.24.0 // indirect
-	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 )
