@@ -17,6 +17,7 @@ import (
 
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/target"
 
 	"github.com/KaraBala10/chatbang-pro/internal/chaturl"
 	"github.com/KaraBala10/chatbang-pro/internal/config"
@@ -83,6 +84,22 @@ func New(browser, profileDir string, headless bool, chatTarget string, keepBrows
 // Close shuts down the browser session.
 func (s *Session) Close() {
 	fmt.Fprintf(os.Stderr, "[debug] Close: keepBrowser=%v allocCancel!=nil=%v\n", s.keepBrowser, s.allocCancel != nil)
+	if s.ctx != nil && !s.keepBrowser {
+		// Gracefully close browser so Chrome can flush auth cookies and
+		// session data to disk.  Use chromedp.Cancel (the proper API) which
+		// sets closingGracefully, sends Browser.close via the internal
+		// b.execute path, and waits for the process to exit.
+		if s.ctx.Err() != nil {
+			fmt.Fprintf(os.Stderr, "[debug] Close: context already cancelled (%v)\n", s.ctx.Err())
+		} else {
+			fmt.Fprintln(os.Stderr, "[debug] Close: gracefully closing browser\u2026")
+			tctx, tcancel := context.WithTimeout(s.ctx, 3*time.Second)
+			if err := chromedp.Cancel(tctx); err != nil {
+				fmt.Fprintf(os.Stderr, "[debug] Close: Cancel error: %v\n", err)
+			}
+			tcancel()
+		}
+	}
 	if s.ctxCancel != nil && !s.keepBrowser {
 		s.ctxCancel()
 	}
@@ -121,10 +138,10 @@ func (s *Session) RunTurn(prompt string) {
 }
 
 // LoginProfile opens a visible non-headless Chrome browser for first-time login.
-func LoginProfile(browser, profileDir string) {
+func LoginProfile(browserPath, profileDir string) {
 	allocatorCtx, allocCancel := chromedp.NewExecAllocator(
 		context.Background(),
-		config.AllocatorOptions(browser, profileDir, false)...,
+		config.AllocatorOptions(browserPath, profileDir, false)...,
 	)
 	defer allocCancel()
 
@@ -150,7 +167,17 @@ func LoginProfile(browser, profileDir string) {
 		log.Fatal(err)
 	}
 	fmt.Println("Configuration saved.")
+	fmt.Fprintln(os.Stderr, "[debug] LoginProfile: gracefully closing browser\u2026")
+	// Use chromedp.Cancel to close gracefully so Chrome flushes cookies
+	// and session data before the process exits.  The deferred
+	// allocCancel (SIGKILL) later is harmless if Chrome already stopped.
+	tctx, tcancel := context.WithTimeout(ctx, 3*time.Second)
+	if err := chromedp.Cancel(tctx); err != nil {
+		fmt.Fprintf(os.Stderr, "[debug] LoginProfile: Cancel error: %v\n", err)
+	}
+	tcancel()
 }
+
 
 func (s *Session) openTab() error {
 	if s.ctxCancel != nil {
@@ -265,6 +292,11 @@ func submitPrompt(ctx context.Context, prompt string) error {
 		chromedp.Click(`#prompt-textarea`, chromedp.ByID),
 		chromedp.Evaluate(setPromptJS, nil),
 		chromedp.Sleep(500*time.Millisecond),
+		// Activate tab before clicking submit -- background tab may defer
+		// React state updates, leaving the submit button disabled.
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return target.ActivateTarget(chromedp.FromContext(ctx).Target.TargetID).Do(ctx)
+		}),
 		chromedp.Click(`#composer-submit-button`, chromedp.ByID),
 	)
 }
