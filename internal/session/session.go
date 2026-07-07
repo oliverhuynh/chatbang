@@ -71,8 +71,7 @@ func (s *Session) RunTurn(prompt string) {
 	if err != nil {
 		fatalChatErr(err)
 	}
-	fmt.Println()
-	fmt.Println(string(result))
+	fmt.Print(string(result))
 }
 
 // LoginProfile opens a visible browser for first-time setup.

@@ -98,7 +98,7 @@ func renderResponse(text string) ([]byte, error) {
 	if strings.Count(text, "\n") >= 2 || len(text) >= plainTextMinLen {
 		return []byte(text + "\n"), nil
 	}
-	return markdown.Render(text, 80, 2), nil
+	return markdown.Render(text, 80, 0), nil
 }
 
 func confirmFullResponse(ctx context.Context, confirmWait time.Duration) (string, bool, error) {
