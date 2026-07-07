@@ -2,7 +2,8 @@
 set -euo pipefail
 
 . .env
-MODEL="chatbang/gpt-4o"
+MODEL="${MODEL:-cheapest-models}"
+# chatbang/gpt-4o"
 HOST9ROUTER="http://9router:20128/v1"
 URL="${HOST9ROUTER}/chat/completions"
 
