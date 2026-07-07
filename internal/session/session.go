@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/chromedp"
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/target"
+	"github.com/chromedp/chromedp"
 
 	"github.com/KaraBala10/chatbang-pro/internal/chaturl"
 	"github.com/KaraBala10/chatbang-pro/internal/config"
@@ -179,7 +179,6 @@ func LoginProfile(browserPath, profileDir string) {
 	}
 	tcancel()
 }
-
 
 func (s *Session) openTab() error {
 	if s.ctxCancel != nil {
@@ -467,8 +466,13 @@ func KillBackgroundBrowser() error {
 
 	tabCtx, tabCancel := chromedp.NewContext(ctx)
 	defer tabCancel()
-
-	return chromedp.Run(tabCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	fmt.Fprintln(os.Stderr, "[debug] KillBackgroundBrowser: gracefully closing browser\u2026")
+	tctx, tcancel := context.WithTimeout(tabCtx, 3*time.Second)
+	defer tcancel()
+	if err := chromedp.Run(tctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return browser.Close().Do(ctx)
-	}))
+	})); err != nil {
+		fmt.Fprintf(os.Stderr, "[debug] KillBackgroundBrowser: close error: %v\n", err)
+	}
+	return nil
 }
