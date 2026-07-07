@@ -60,12 +60,64 @@ headless=true
 chatbang-pro              # 🚀 start chat
 chatbang-pro --keep-browser           # 🌙 keep Chrome alive and reuse it next run
 chatbang-pro --kill-browser           # 🔫 kill the background Chrome
+chatbang-pro --server                 # 🔌 OpenAI-compatible Chat Completions server
+chatbang-pro --server --port 20000    # 🔌 same server, custom port
+chatbang-pro --server --listen 0.0.0.0 # 🔌 same server, custom listen IP
 chatbang-pro --config     # 🔐 refresh login
 chatbang-pro -g g-XXXX    # 🎯 custom GPT (full URL or g-... id)
 chatbang-pro --help       # 📖 full CLI reference (-h)
 ```
 
 Type `exit` or `quit` to leave. Run `chatbang-pro --help` for all flags and options.
+
+## OpenAI-compatible local server
+
+Run:
+
+```bash
+chatbang-pro --server
+```
+
+Custom port:
+
+```bash
+chatbang-pro --server --port 20000
+```
+
+Custom listen IP:
+
+```bash
+chatbang-pro --server --listen 0.0.0.0
+chatbang-pro --server --listen 0.0.0.0 --port 20000
+```
+
+Then send requests to:
+
+```bash
+curl http://127.0.0.1:19999/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "chatbang-pro",
+    "messages": [
+      {"role": "system", "content": "You are concise."},
+      {"role": "user", "content": "Say hello"}
+    ]
+  }'
+```
+
+Notes:
+- Minimal compatibility layer only: one choice, non-streaming, no auth.
+- `stream=true` is rejected.
+- Each request uses a fresh temporary chat to avoid context leaking across requests.
+
+Test helper scripts:
+
+```bash
+bash scripts/test-chat-basic.sh
+bash scripts/test-chat-system-user.sh
+bash scripts/test-chat-stream-error.sh
+HOST=127.0.0.1 PORT=20000 bash scripts/test-chat-basic.sh
+```
 
 ---
 

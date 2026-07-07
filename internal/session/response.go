@@ -148,7 +148,7 @@ func responseStarted(baseline responseStatus, status responseStatus) bool {
 	return false
 }
 
-func waitForResponse(ctx context.Context) ([]byte, int, error) {
+func waitForResponseText(ctx context.Context) (string, int, error) {
 	deadline := time.Now().Add(responseTimeout)
 	baseline, _ := evaluateResponseStatus(ctx)
 
@@ -159,13 +159,12 @@ func waitForResponse(ctx context.Context) ([]byte, int, error) {
 	var stableCount int
 	var peakLen int
 
-	returnPartial := func(warn string) ([]byte, int, error) {
+	returnPartial := func(warn string) (string, int, error) {
 		if lastPartial == "" {
-			return nil, peakLen, fmt.Errorf("browser disconnected before any response was captured; restart chatbang-pro")
+			return "", peakLen, fmt.Errorf("browser disconnected before any response was captured; restart chatbang-pro")
 		}
 		fmt.Fprintln(os.Stderr, warn)
-		out, err := renderResponse(lastPartial)
-		return out, max(peakLen, len(lastPartial)), err
+		return strings.TrimSpace(lastPartial), max(peakLen, len(lastPartial)), nil
 	}
 
 	for time.Now().Before(deadline) {
@@ -220,8 +219,7 @@ func waitForResponse(ctx context.Context) ([]byte, int, error) {
 						time.Sleep(pollIntervalDone)
 						continue
 					}
-					out, err := renderResponse(text)
-					return out, max(peakLen, len(text)), err
+					return strings.TrimSpace(text), max(peakLen, len(text)), nil
 				}
 			} else {
 				lastSig = sig
@@ -237,5 +235,14 @@ func waitForResponse(ctx context.Context) ([]byte, int, error) {
 		return returnPartial("Warning: timed out waiting for reply to finish; showing partial response.")
 	}
 
-	return nil, peakLen, fmt.Errorf("timed out after %s waiting for ChatGPT (very long replies may need several minutes)", responseTimeout)
+	return "", peakLen, fmt.Errorf("timed out after %s waiting for ChatGPT (very long replies may need several minutes)", responseTimeout)
+}
+
+func waitForResponse(ctx context.Context) ([]byte, int, error) {
+	text, peakLen, err := waitForResponseText(ctx)
+	if err != nil {
+		return nil, peakLen, err
+	}
+	out, err := renderResponse(text)
+	return out, peakLen, err
 }

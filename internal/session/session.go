@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/browser"
@@ -34,6 +35,7 @@ type Session struct {
 	keepBrowser bool
 	temporary   bool
 	sessionFile string
+	mu          sync.Mutex
 }
 
 const keepBrowserDebugPort = 39227
@@ -115,28 +117,74 @@ func (s *Session) Close() {
 
 // RunTurn sends one prompt and prints the assistant reply to stdout.
 func (s *Session) RunTurn(prompt string) {
-	fmt.Fprintln(os.Stderr, "[Thinking...]")
-
-	if err := s.prepareForPrompt(); err != nil {
-		fatalChatErr(err)
-	}
-	if err := ensureCustomGPTPage(s.ctx, s.chatURL, chaturl.CustomGPTPathPrefix(s.chatURL)); err != nil {
-		fatalChatErr(err)
-	}
-
-	if err := s.submitPromptWithRetry(prompt); err != nil {
-		fatalChatErr(err)
-	}
-
-	result, peakLen, err := waitForResponse(s.ctx)
+	result, err := s.ask(prompt, false)
 	if err != nil {
 		fatalChatErr(err)
 	}
-	s.lastPeak = peakLen
-
-	os.Stdout.Write(result)
-
+	out, err := renderResponse(result)
+	if err != nil {
+		fatalChatErr(err)
+	}
+	os.Stdout.Write(out)
 	s.maybeSaveSession()
+}
+
+// Ask sends one prompt and returns the raw assistant text.
+func (s *Session) Ask(prompt string) (string, error) {
+	return s.ask(prompt, false)
+}
+
+// AskFresh starts a fresh chat target before asking, for stateless API use.
+func (s *Session) AskFresh(prompt string) (string, error) {
+	return s.ask(prompt, true)
+}
+
+func (s *Session) ask(prompt string, fresh bool) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	fmt.Fprintln(os.Stderr, "[Thinking...]")
+	if err := s.prepareForAsk(fresh); err != nil {
+		return "", err
+	}
+	if err := s.submitPromptWithRetry(prompt); err != nil {
+		return "", err
+	}
+	result, peakLen, err := waitForResponseText(s.ctx)
+	if err != nil {
+		return "", err
+	}
+	s.lastPeak = peakLen
+	return result, nil
+}
+
+func (s *Session) prepareForAsk(fresh bool) error {
+	err := s.prepareForAskOnce(fresh)
+	if err == nil {
+		return nil
+	}
+	if !isSessionDead(err) {
+		return err
+	}
+	if err := s.recover(); err != nil {
+		return err
+	}
+	return s.prepareForAskOnce(fresh)
+}
+
+func (s *Session) prepareForAskOnce(fresh bool) error {
+	if fresh {
+		if err := s.resetChat(); err != nil {
+			return err
+		}
+	}
+	if err := s.prepareForPrompt(); err != nil {
+		return err
+	}
+	if err := ensureCustomGPTPage(s.ctx, s.chatURL, chaturl.CustomGPTPathPrefix(s.chatURL)); err != nil {
+		return err
+	}
+	return nil
 }
 
 // LoginProfile opens a visible non-headless Chrome browser for first-time login.
@@ -309,6 +357,10 @@ func (s *Session) prepareForPrompt() error {
 		return nil
 	}
 	fmt.Fprintln(os.Stderr, "Starting a fresh chat (last reply was large)...")
+	return s.resetChat()
+}
+
+func (s *Session) resetChat() error {
 	s.lastPeak = 0
 	if err := chromedp.Run(s.ctx, chromedp.Navigate(s.chatURL)); err != nil {
 		return err

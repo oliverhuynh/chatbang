@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/user"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/KaraBala10/chatbang-pro/internal/config"
 	"github.com/KaraBala10/chatbang-pro/internal/help"
 	"github.com/KaraBala10/chatbang-pro/internal/prompt"
+	"github.com/KaraBala10/chatbang-pro/internal/server"
 	"github.com/KaraBala10/chatbang-pro/internal/session"
 )
 
@@ -78,7 +80,6 @@ func Run(version string, args []string) {
 		return
 	}
 
-
 	if opts.KillBrowser {
 		if err := session.KillBackgroundBrowser(); err != nil {
 			log.Fatal(err)
@@ -103,7 +104,15 @@ func Run(version string, args []string) {
 
 	headless = opts.Headless
 	var chatTarget string
-	if opts.Resume != "" {
+	if opts.ServerMode {
+		if opts.Resume != "" {
+			log.Fatal("--resume is not supported with --server")
+		}
+		chatTarget, err = chaturl.Resolve(true, opts.CustomGPT)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else if opts.Resume != "" {
 		item, err := session.ResolveSavedSession(paths.Sessions, opts.Resume)
 		if err != nil {
 			log.Fatal(err)
@@ -134,6 +143,16 @@ func Run(version string, args []string) {
 		log.Fatal(err)
 	}
 	defer sess.Close()
+	if opts.ServerMode {
+		mux := http.NewServeMux()
+		server.NewHandler(sess).Register(mux)
+		listenAddr := cli.ListenAddr(opts)
+		fmt.Fprintf(os.Stderr, "OpenAI-compatible server listening on http://%s/v1/chat/completions\n", listenAddr)
+		if err := http.ListenAndServe(listenAddr, mux); err != nil {
+			log.Print(err)
+		}
+		return
+	}
 
 	if opts.MessageFlag && strings.TrimSpace(opts.Message) == "" {
 		log.Fatal("--message requires a value")
