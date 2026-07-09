@@ -27,11 +27,13 @@ Model discovery URLs:
 - `--port` — listen port only
 - `--gpt` / `--custom-gpt` — target a custom GPT instead of default ChatGPT
 - `--keep-browser` — optional; reuse one Chrome instance across server restarts/invocations
+- browser-mode flags such as `--headless` and `--no-headless` still apply in server mode
 
 Examples:
 
 ```bash
 chatbang-pro --server
+chatbang-pro --server --no-headless
 chatbang-pro --server --port 20000
 chatbang-pro --server --listen 0.0.0.0 --port 20000
 chatbang-pro --server --listen [::1]
@@ -83,6 +85,8 @@ For model discovery, the server returns a static OpenAI-style list response with
 - Each request uses a fresh temporary chat to avoid cross-request context bleed.
 - Requests are serialized through one `session.Session`; concurrent clients do not run in parallel through the browser.
 - If the browser/tab is dead before prompt submission, session prep now routes through `recover()` and reopens the tab instead of wedging the server.
+- Server mode uses the same browser launch path as standalone mode, so `--headless` / `--no-headless` affect the server-owned browser process on new launches.
+- The ChatGPT composer currently automates a contenteditable `DIV` / editor surface rather than a plain `TEXTAREA`; multiline insertion debugging must be verified in browser-side editor state, not only in server-side flattened prompt logs.
 
 ## Key files
 

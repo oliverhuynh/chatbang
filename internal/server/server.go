@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -114,11 +115,15 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "stream", "stream=true is not supported")
 		return
 	}
+	if payload, err := json.Marshal(req.Messages); err == nil {
+		fmt.Fprintf(os.Stderr, "[server] incoming messages: %s\n", quotedPreview(string(payload), 800))
+	}
 	prompt, err := flattenMessages(req.Messages)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "messages", err.Error())
 		return
 	}
+	fmt.Fprintf(os.Stderr, "[server] flattened prompt nl=%d: %s\n", strings.Count(prompt, "\n"), quotedPreview(prompt, 800))
 
 	reply, err := h.asker.AskFresh(prompt)
 	if err != nil {
@@ -172,23 +177,33 @@ func flattenMessages(messages []chatRequestMessage) (string, error) {
 	}
 
 	lines := make([]string, 0, len(messages))
-	for _, message := range messages {
+	roles := make([]string, 0, len(messages))
+	contents := make([]string, 0, len(messages))
+	for i, message := range messages {
 		role := strings.TrimSpace(message.Role)
 		if role == "" {
 			return "", fmt.Errorf("message role is required")
 		}
+		fmt.Fprintf(os.Stderr, "[server] message[%d] role=%q raw-content: %s\n", i, role, quotedPreview(string(message.Content), 400))
 		content, err := extractContentText(message.Content)
 		if err != nil {
 			return "", err
 		}
-		content = strings.TrimSpace(content)
-		if content == "" {
+		fmt.Fprintf(os.Stderr, "[server] message[%d] extracted nl=%d: %s\n", i, strings.Count(content, "\n"), quotedPreview(content, 400))
+		trimmed := strings.TrimSpace(content)
+		fmt.Fprintf(os.Stderr, "[server] message[%d] trimmed nl=%d: %s\n", i, strings.Count(trimmed, "\n"), quotedPreview(trimmed, 400))
+		if trimmed == "" {
 			continue
 		}
-		lines = append(lines, strings.ToUpper(role)+": "+content)
+		roles = append(roles, strings.ToLower(role))
+		contents = append(contents, trimmed)
+		lines = append(lines, strings.ToUpper(role)+": "+trimmed)
 	}
 	if len(lines) == 0 {
 		return "", fmt.Errorf("messages must include text content")
+	}
+	if len(contents) == 1 && roles[0] == "user" {
+		return contents[0], nil
 	}
 	return strings.Join(lines, "\n\n"), nil
 }
@@ -226,6 +241,17 @@ func newID(prefix string) string {
 		return prefix + "-" + fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return prefix + "-" + hex.EncodeToString(buf)
+}
+
+func quotedPreview(text string, limit int) string {
+	if limit <= 0 {
+		limit = 1
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return fmt.Sprintf("%q", text)
+	}
+	return fmt.Sprintf("%q", string(runes[:limit])+"...")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

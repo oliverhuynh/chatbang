@@ -102,6 +102,14 @@ func Run(version string, args []string) {
 		return
 	}
 
+	blocked, err := shouldBlockForRunningServer(paths, opts)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if blocked {
+		log.Fatal(standaloneBlockedMessage)
+	}
+
 	headless = opts.Headless
 	var chatTarget string
 	if opts.ServerMode {
@@ -147,6 +155,10 @@ func Run(version string, args []string) {
 		mux := http.NewServeMux()
 		server.NewHandler(sess).Register(mux)
 		listenAddr := cli.ListenAddr(opts)
+		if err := writeServerState(paths.ServerState, listenAddr); err != nil {
+			log.Fatal(err)
+		}
+		defer os.Remove(paths.ServerState)
 		fmt.Fprintf(os.Stderr, "OpenAI-compatible server listening on http://%s/v1/chat/completions\n", listenAddr)
 		if err := http.ListenAndServe(listenAddr, mux); err != nil {
 			log.Print(err)

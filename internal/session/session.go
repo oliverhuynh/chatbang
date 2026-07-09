@@ -140,21 +140,27 @@ func (s *Session) AskFresh(prompt string) (string, error) {
 }
 
 func (s *Session) ask(prompt string, fresh bool) (string, error) {
+	fmt.Fprintf(os.Stderr, "[session] ask start fresh=%v promptNL=%d\n", fresh, strings.Count(prompt, "\n"))
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	fmt.Fprintln(os.Stderr, "[session] ask lock acquired")
 
 	fmt.Fprintln(os.Stderr, "[Thinking...]")
 	if err := s.prepareForAsk(fresh); err != nil {
+		fmt.Fprintf(os.Stderr, "[session] prepare failed: %v\n", err)
 		return "", err
 	}
 	if err := s.submitPromptWithRetry(prompt); err != nil {
+		fmt.Fprintf(os.Stderr, "[session] submit failed: %v\n", err)
 		return "", err
 	}
 	result, peakLen, err := waitForResponseText(s.ctx)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[session] wait failed peakLen=%d: %v\n", peakLen, err)
 		return "", err
 	}
 	s.lastPeak = peakLen
+	fmt.Fprintf(os.Stderr, "[session] ask done peakLen=%d resultLen=%d\n", peakLen, len(result))
 	return result, nil
 }
 
@@ -386,21 +392,192 @@ func (s *Session) submitPromptWithRetry(prompt string) error {
 }
 
 func submitPrompt(ctx context.Context, prompt string) error {
+	fmt.Fprintf(os.Stderr, "[session] submit prompt nl=%d: %s\n", strings.Count(prompt, "\n"), quotedPreview(prompt, 800))
 	promptJSON, err := json.Marshal(prompt)
 	if err != nil {
 		return err
 	}
 
 	setPromptJS := fmt.Sprintf(`(() => {
+		const countNL = value => ((value || '').match(/\n/g) || []).length;
+		const preview = value => JSON.stringify(value || '').slice(0, 400);
+		const htmlPreview = value => (value || '').slice(0, 400);
+		const domPreview = node => {
+			if (!node || !node.outerHTML) return 'null';
+			return node.outerHTML.slice(0, 400);
+		};
+		const selectionSummary = () => {
+			const sel = window.getSelection && window.getSelection();
+			if (!sel) return 'none';
+			return [
+				'rangeCount=' + sel.rangeCount,
+				'anchorNode=' + (sel.anchorNode ? sel.anchorNode.nodeName : 'null'),
+				'anchorOffset=' + sel.anchorOffset,
+				'focusNode=' + (sel.focusNode ? sel.focusNode.nodeName : 'null'),
+				'focusOffset=' + sel.focusOffset,
+			].join(' ');
+		};
+		const editableRoot = node => node && node.closest ? node.closest('[contenteditable="true"], [contenteditable="plaintext-only"], [role="textbox"]') : null;
+		const logState = (label, el) => {
+			const root = editableRoot(el);
+			const active = document.activeElement;
+			console.log('[chatbang]', label,
+				'tag=' + el.tagName,
+				'contenteditable=' + (el.getAttribute('contenteditable') || ''),
+				'role=' + (el.getAttribute('role') || ''),
+				'nl.textContent=' + countNL(el.textContent || ''),
+				'nl.innerText=' + countNL(el.innerText || ''),
+				'active=' + (active ? active.tagName : 'null'),
+				'root=' + (root ? root.tagName : 'null'),
+				'root.ce=' + (root ? (root.getAttribute('contenteditable') || '') : ''),
+				selectionSummary(),
+				'textContent=' + preview(el.textContent || ''),
+				'innerText=' + preview(el.innerText || ''),
+				'innerHTML=' + htmlPreview(el.innerHTML || ''));
+		};
+		const extractEditorView = el => {
+			let targetEl = el || document.getElementById('prompt-textarea') || document.querySelector('.ProseMirror');
+			if (!targetEl) return null;
+
+			let fiberNode = null;
+			let currentEl = targetEl;
+			let climbed = 0;
+			while (currentEl && !fiberNode) {
+				const reactKey = Object.keys(currentEl).find(key => key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$'));
+				if (reactKey) {
+					fiberNode = currentEl[reactKey];
+					console.log('[chatbang] react-fiber-found',
+						'climbed=' + climbed,
+						'tag=' + currentEl.tagName,
+						'id=' + (currentEl.id || ''),
+						'class=' + (currentEl.className || ''));
+					break;
+				}
+				currentEl = currentEl.parentElement;
+				climbed++;
+			}
+			if (!fiberNode) return null;
+
+			let foundView = null;
+			let candidateCount = 0;
+			const searchDeepForView = (obj, visited = new Set()) => {
+				if (!obj || typeof obj !== 'object' || visited.has(obj)) return;
+				visited.add(obj);
+				if (obj.dom && typeof obj.updateState === 'function' && obj.state) {
+					candidateCount++;
+					const dom = obj.dom;
+					const matchesRoot = dom === targetEl;
+					const containsRoot = typeof dom.contains === 'function' && dom.contains(targetEl);
+					const rootContainsDom = typeof targetEl.contains === 'function' && targetEl.contains(dom);
+					console.log('[chatbang] editor-view-candidate',
+						'idx=' + candidateCount,
+						'domTag=' + (dom.tagName || 'null'),
+						'domId=' + (dom.id || ''),
+						'domClass=' + (dom.className || ''),
+						'matchesRoot=' + matchesRoot,
+						'containsRoot=' + containsRoot,
+						'rootContainsDom=' + rootContainsDom,
+						'stateDocSize=' + (obj.state && obj.state.doc && typeof obj.state.doc.content?.size !== 'undefined' ? obj.state.doc.content.size : 'na'),
+						'selectionFrom=' + (obj.state && obj.state.selection ? obj.state.selection.from : 'na'),
+						'selectionTo=' + (obj.state && obj.state.selection ? obj.state.selection.to : 'na'),
+						'domPreview=' + htmlPreview(domPreview(dom)));
+					foundView = obj;
+					return;
+				}
+				for (const key in obj) {
+					try {
+						if (obj[key] && typeof obj[key] === 'object') {
+							searchDeepForView(obj[key], visited);
+							if (foundView) return;
+						}
+					} catch (err) {}
+				}
+			};
+
+			let curr = fiberNode;
+			while (curr && !foundView) {
+				if (curr.memoizedState) searchDeepForView(curr.memoizedState);
+				if (!foundView && curr.memoizedProps) searchDeepForView(curr.memoizedProps);
+				curr = curr.return;
+			}
+			console.log('[chatbang] editor-view-result',
+				'candidateCount=' + candidateCount,
+				'found=' + !!foundView);
+			return foundView;
+		};
+		const replaceEditableWithPaste = (el, text) => {
+			const fail = msg => {
+				console.log('[chatbang] paste-fail', msg);
+				throw new Error(msg);
+			};
+			const root = editableRoot(el) || el;
+			const view = extractEditorView(root);
+			console.log('[chatbang] incoming-text',
+				'nl=' + countNL(text),
+				preview(text));
+
+			if (!view) fail('editor view not found');
+			if (!view.dom) fail('editor view has no dom');
+
+			const viewDomMatchesRoot = view.dom === root;
+			const viewDomContainsRoot = typeof view.dom.contains === 'function' && view.dom.contains(root);
+			const rootContainsViewDom = typeof root.contains === 'function' && root.contains(view.dom);
+			const viewClosestPrompt = typeof view.dom.closest === 'function' ? !!view.dom.closest('#prompt-textarea') : false;
+			console.log('[chatbang] view-dom-check',
+				'matchesRoot=' + viewDomMatchesRoot,
+				'containsRoot=' + viewDomContainsRoot,
+				'rootContainsViewDom=' + rootContainsViewDom,
+				'viewClosestPrompt=' + viewClosestPrompt,
+				'viewDomTag=' + (view.dom.tagName || 'null'),
+				'rootTag=' + (root.tagName || 'null'),
+				'viewDomPreview=' + htmlPreview(domPreview(view.dom)),
+				'rootPreview=' + htmlPreview(domPreview(root)));
+
+			if (!viewDomMatchesRoot && !viewDomContainsRoot) {
+				fail('editor view is not bound to prompt root');
+			}
+
+			root.focus();
+			if (typeof view.focus === 'function') {
+				view.focus();
+			}
+
+			const beforeText = root.textContent || '';
+			const sel = view.state && view.state.selection;
+			if (!sel) fail('editor view has no selection');
+			if (typeof view.pasteText !== 'function') fail('editor view has no pasteText');
+
+			view.pasteText(text, sel.from, sel.to);
+
+			const afterText = root.textContent || '';
+
+			console.log('[chatbang] paste-path',
+				'viewDomMatchesRoot=' + viewDomMatchesRoot,
+				'viewDomContainsRoot=' + viewDomContainsRoot,
+				'beforeNL=' + countNL(beforeText),
+				'afterNL=' + countNL(afterText),
+				'textContent=' + preview(afterText),
+				'innerHTML=' + htmlPreview(root.innerHTML || ''));
+
+			if (!afterText.trim()) {
+				fail('pasteText completed but prompt root stayed empty');
+			}
+		};
 		const el = document.querySelector('#prompt-textarea');
 		if (!el) throw new Error('prompt textarea not found');
+		logState('before-set', el);
 		el.focus();
 		if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
 			el.value = %s;
 		} else {
-			el.textContent = %s;
+			replaceEditableWithPaste(el, %s);
 		}
+		logState('after-set', el);
 		el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+		logState('after-input', el);
+		console.log('[chatbang] submit-click start');
+		requestAnimationFrame(() => logState('after-raf', el));
+		setTimeout(() => logState('after-timeout', el), 0);
 	})()`, promptJSON, promptJSON)
 
 	return chromedp.Run(ctx,
@@ -441,6 +618,17 @@ func fatalChatErr(err error) {
 		log.Fatal("browser session ended unexpectedly (Chrome disconnected); restart chatbang-pro and try again")
 	}
 	log.Fatal(err)
+}
+
+func quotedPreview(text string, limit int) string {
+	if limit <= 0 {
+		limit = 1
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return fmt.Sprintf("%q", text)
+	}
+	return fmt.Sprintf("%q", string(runes[:limit])+"...")
 }
 
 // maybeSaveSession writes a session snapshot if the current chat

@@ -29,20 +29,22 @@ var browsers = []string{
 
 // Paths holds config and profile locations under the user home directory.
 type Paths struct {
-	Dir     string
-	File    string
-	Profile string
-	Sessions string
+	Dir         string
+	File        string
+	Profile     string
+	Sessions    string
+	ServerState string
 }
 
 // PathsForHome returns standard chatbang config paths for a home directory.
 func PathsForHome(homeDir string) Paths {
 	dir := filepath.Join(homeDir, ".config", "chatbang")
 	paths := Paths{
-		Dir:      dir,
-		File:     filepath.Join(dir, "chatbang"),
-		Profile:  filepath.Join(dir, "profile_data"),
-		Sessions: filepath.Join(dir, "sessions.json"),
+		Dir:         dir,
+		File:        filepath.Join(dir, "chatbang"),
+		Profile:     filepath.Join(dir, "profile_data"),
+		Sessions:    filepath.Join(dir, "sessions.json"),
+		ServerState: filepath.Join(dir, "server.json"),
 	}
 	fmt.Fprintf(os.Stderr, "[debug] PathsForHome: Sessions=%q\n", paths.Sessions)
 	return paths

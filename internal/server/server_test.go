@@ -3,8 +3,10 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -30,14 +32,26 @@ func TestFlattenMessagesSupportsTextParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prompt != "USER: Hello\nworld" {
+	if prompt != "Hello\nworld" {
+		t.Fatalf("flattenMessages() = %q", prompt)
+	}
+}
+
+func TestFlattenMessagesSingleUserMessagePassesThrough(t *testing.T) {
+	prompt, err := flattenMessages([]chatRequestMessage{
+		{Role: "user", Content: json.RawMessage(`"Say hi"`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prompt != "Say hi" {
 		t.Fatalf("flattenMessages() = %q", prompt)
 	}
 }
 
 func TestChatCompletionsHandler(t *testing.T) {
 	handler := NewHandler(AskFunc(func(prompt string) (string, error) {
-		if !strings.Contains(prompt, "USER: Ping") {
+		if prompt != "Ping" {
 			t.Fatalf("prompt = %q", prompt)
 		}
 		return "Pong", nil
@@ -114,5 +128,48 @@ func TestModelsHandler(t *testing.T) {
 		if resp.Data[0].Object != "model" {
 			t.Fatalf("%s first object = %q", path, resp.Data[0].Object)
 		}
+	}
+}
+
+func TestQuotedPreviewPreservesSpaces(t *testing.T) {
+	got := quotedPreview("  hi  \nthere\t", 100)
+	want := "\"  hi  \\nthere\\t\""
+	if got != want {
+		t.Fatalf("quotedPreview() = %q, want %q", got, want)
+	}
+}
+
+func TestChatCompletionsLogsIncomingPrompt(t *testing.T) {
+	handler := NewHandler(AskFunc(func(prompt string) (string, error) {
+		return "Pong", nil
+	}))
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() {
+		os.Stderr = oldStderr
+	}()
+
+	body := bytes.NewBufferString(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"  Ping  "}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", body)
+	rec := httptest.NewRecorder()
+
+	handler.handleChatCompletions(rec, req)
+	_ = w.Close()
+	logBytes, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	logOutput := string(logBytes)
+	if !strings.Contains(logOutput, `[server] incoming messages: "[{\"role\":\"user\",\"content\":\"  Ping  \"}]"`) {
+		t.Fatalf("log output = %q", logOutput)
 	}
 }

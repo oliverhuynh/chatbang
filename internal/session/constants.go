@@ -5,6 +5,8 @@ import "time"
 const (
 	navTimeout             = 60 * time.Second
 	responseTimeout        = 15 * time.Minute
+	responseStartTimeout   = 12 * time.Second
+	responseStallTimeout   = 90 * time.Second
 	pollIntervalActive     = 1 * time.Second
 	pollIntervalDone       = 350 * time.Millisecond
 	stablePollsDefault     = 2

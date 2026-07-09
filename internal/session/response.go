@@ -150,7 +150,9 @@ func responseStarted(baseline responseStatus, status responseStatus) bool {
 
 func waitForResponseText(ctx context.Context) (string, int, error) {
 	deadline := time.Now().Add(responseTimeout)
+	startDeadline := time.Now().Add(responseStartTimeout)
 	baseline, _ := evaluateResponseStatus(ctx)
+	fmt.Fprintf(os.Stderr, "[session] wait response start timeout=%s stall timeout=%s total timeout=%s baseline generating=%v nodeCount=%d len=%d\n", responseStartTimeout, responseStallTimeout, responseTimeout, baseline.Generating, baseline.NodeCount, baseline.Len)
 
 	var lastSig string
 	var lastPartial string
@@ -158,6 +160,10 @@ func waitForResponseText(ctx context.Context) (string, int, error) {
 	var started bool
 	var stableCount int
 	var peakLen int
+	var lastProgressAt time.Time
+	var lastProgressSig string
+	var lastProgressLen int
+	var lastProgressNodeCount int
 
 	returnPartial := func(warn string) (string, int, error) {
 		if lastPartial == "" {
@@ -189,10 +195,35 @@ func waitForResponseText(ctx context.Context) (string, int, error) {
 		if !started {
 			if responseStarted(baseline, status) {
 				started = true
+				lastProgressAt = time.Now()
+				lastProgressSig = status.signature()
+				lastProgressLen = status.Len
+				lastProgressNodeCount = status.NodeCount
+				fmt.Fprintf(os.Stderr, "[session] response started generating=%v nodeCount=%d len=%d\n", status.Generating, status.NodeCount, status.Len)
 			} else {
+				if time.Now().After(startDeadline) {
+					fmt.Fprintf(os.Stderr, "[session] response did not start before timeout nodeCount=%d len=%d\n", status.NodeCount, status.Len)
+					return "", peakLen, fmt.Errorf("no ChatGPT response started within %s after submit; prompt likely was not sent", responseStartTimeout)
+				}
 				time.Sleep(pollIntervalDone)
 				continue
 			}
+		}
+
+		progressed := false
+		currentSig := status.signature()
+		if status.NodeCount > lastProgressNodeCount || status.Len > lastProgressLen || (status.Len > 0 && currentSig != lastProgressSig) {
+			progressed = true
+		}
+		if progressed {
+			lastProgressAt = time.Now()
+			lastProgressSig = currentSig
+			lastProgressLen = status.Len
+			lastProgressNodeCount = status.NodeCount
+			fmt.Fprintf(os.Stderr, "[session] response progress generating=%v nodeCount=%d len=%d\n", status.Generating, status.NodeCount, status.Len)
+		} else if !lastProgressAt.IsZero() && time.Since(lastProgressAt) > responseStallTimeout {
+			fmt.Fprintf(os.Stderr, "[session] response stalled generating=%v nodeCount=%d len=%d lastProgressAgo=%s\n", status.Generating, status.NodeCount, status.Len, time.Since(lastProgressAt).Truncate(time.Second))
+			return "", peakLen, fmt.Errorf("ChatGPT stalled for %s after response start", responseStallTimeout)
 		}
 
 		if status.Generating {
@@ -219,6 +250,7 @@ func waitForResponseText(ctx context.Context) (string, int, error) {
 						time.Sleep(pollIntervalDone)
 						continue
 					}
+					fmt.Fprintf(os.Stderr, "[session] response complete peakLen=%d finalLen=%d\n", peakLen, len(text))
 					return strings.TrimSpace(text), max(peakLen, len(text)), nil
 				}
 			} else {

@@ -28,4 +28,7 @@ func TestPathsForHome(t *testing.T) {
 	if p.Profile != "/home/user/.config/chatbang/profile_data" {
 		t.Fatalf("unexpected profile path: %s", p.Profile)
 	}
+	if p.ServerState != "/home/user/.config/chatbang/server.json" {
+		t.Fatalf("unexpected server state path: %s", p.ServerState)
+	}
 }

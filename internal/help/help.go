@@ -33,7 +33,7 @@ Type a prompt at `+"`> `"+`, wait for `+"`[Thinking...]`"+`, then read the reply
 | `+"`--temporary-chat`"+`, `+"`--temp`"+` | Use [temporary chat](%s) (works with `+"`--gpt`"+` too) |
 | `+"`--keep-browser`"+` | Keep the browser running between invocations, reusing it next run |
 | `+"`--kill-browser`"+` | Kill the background browser (started with `+"`--keep-browser`"+`) |
-| `+"`--server`"+` | Run a local OpenAI-compatible server (`+"`POST /v1/chat/completions`"+`) |
+| `+"`--server`"+` | Run a local OpenAI-compatible server (`+"`POST /v1/chat/completions`"+`); browser flags like `+"`--no-headless`"+` still apply |
 | `+"`--listen`"+` | Listen IP/host for `+"`--server`"+` (default `+"`127.0.0.1`"+`) |
 | `+"`--port`"+` | Listen port for `+"`--server`"+` (default `+"`19999`"+`) |
 | `+"`--gpt`"+`, `+"`--custom-gpt`"+`, `+"`-g`"+` | Chat with a [custom GPT](https://chatgpt.com/gpts) (full URL, `+"`/g/g-...`"+` path, or `+"`g-...`"+` id) |
@@ -78,6 +78,7 @@ chatbang-pro -m "What is 2+2?"
 chatbang-pro --keep-browser           # keep Chrome alive and reuse it next run
 chatbang-pro --kill-browser            # kill the background browser
 chatbang-pro --server                 # local OpenAI-compatible chat completions server
+chatbang-pro --server --no-headless   # server mode with a visible browser window
 chatbang-pro --server --listen 0.0.0.0
 chatbang-pro --server --port 20000
 chatbang-pro --server --listen 0.0.0.0 --port 20000
@@ -92,6 +93,7 @@ chatbang-pro --config                 # log in / refresh browser profile
 - After a large reply (>6000 characters), the next prompt starts a **fresh chat** automatically.
 - For follow-ups that need prior context, include that context in the same prompt.
 - `+"`--server`"+` uses a fresh temporary chat per request to avoid cross-request state bleed.
+- Standalone browser flags such as `+"`--headless`"+` and `+"`--no-headless`"+` also work with `+"`--server`"+`.
 `, chaturl.TempURL, configPath)
 	fmt.Println(string(markdown.Render(helpMarkdown, 100, 2)))
 }
