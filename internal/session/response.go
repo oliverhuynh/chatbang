@@ -38,10 +38,11 @@ func evaluateResponseStatus(ctx context.Context) (responseStatus, error) {
 		` + jsIsStreaming + `
 		if (document.querySelector('[data-testid="stop-button"]')) return {generating: true};
 		` + jsAssistantNodes + `
+		` + jsAssistantText + `
 		if (!nodes.length) return {generating: true, nodeCount: 0};
 		const last = nodes[nodes.length - 1];
 		if (isStillStreaming(last)) return {generating: true, nodeCount: nodes.length};
-		const tc = last.textContent || "";
+		const tc = assistantText(last);
 		const len = tc.length;
 		if (!len) return {generating: true, nodeCount: nodes.length};
 		return {generating: false, len: len, tail: tc.substring(len - 400), nodeCount: nodes.length};
@@ -55,8 +56,9 @@ func evaluateResponseStatus(ctx context.Context) (responseStatus, error) {
 func fetchFullResponse(ctx context.Context) (string, error) {
 	lenJS := `(() => {
 		` + jsAssistantNodes + `
+		` + jsAssistantText + `
 		if (!nodes.length) return 0;
-		return (nodes[nodes.length - 1].textContent || "").length;
+		return assistantText(nodes[nodes.length - 1]).length;
 	})()`
 
 	var totalLen int
@@ -71,10 +73,11 @@ func fetchFullResponse(ctx context.Context) (string, error) {
 	for offset := 0; offset < totalLen; offset += textChunkSize {
 		chunkJS := fmt.Sprintf(`(() => {
 			%s
+			%s
 			if (!nodes.length) return "";
-			const t = nodes[nodes.length - 1].textContent || "";
+			const t = assistantText(nodes[nodes.length - 1]);
 			return t.substring(%d, %d);
-		})()`, jsAssistantNodes, offset, offset+textChunkSize)
+		})()`, jsAssistantNodes, jsAssistantText, offset, offset+textChunkSize)
 
 		var part string
 		if err := chromedp.Run(ctx, chromedp.Evaluate(chunkJS, &part)); err != nil {

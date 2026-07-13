@@ -19,7 +19,38 @@ func TestFlattenMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "SYSTEM: You are terse.\n\nUSER: Say hi"
+	want := "# System\n\nYou are terse.\n\n# User\n\nSay hi"
+	if prompt != want {
+		t.Fatalf("flattenMessages() = %q, want %q", prompt, want)
+	}
+}
+
+func TestFlattenMessagesAppendsLaterSystemMessagesUnderSystem(t *testing.T) {
+	prompt, err := flattenMessages([]chatRequestMessage{
+		{Role: "system", Content: json.RawMessage(`"You are a software engineering assistant."`)},
+		{Role: "system", Content: json.RawMessage(`"Use the following retrieved documentation when answering.\n\nSource: deployment.md\n\ndocker compose build\ndocker compose up -d\ndocker compose ps"`)},
+		{Role: "user", Content: json.RawMessage(`"How do I deploy Adiutor?"`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# System\n\nYou are a software engineering assistant.\n\nUse the following retrieved documentation when answering.\n\nSource: deployment.md\n\ndocker compose build\ndocker compose up -d\ndocker compose ps\n\n# User\n\nHow do I deploy Adiutor?"
+	if prompt != want {
+		t.Fatalf("flattenMessages() = %q, want %q", prompt, want)
+	}
+}
+
+func TestFlattenMessagesMovesEarlierTurnsToConversation(t *testing.T) {
+	prompt, err := flattenMessages([]chatRequestMessage{
+		{Role: "system", Content: json.RawMessage(`"You are terse."`)},
+		{Role: "user", Content: json.RawMessage(`"What does this app do?"`)},
+		{Role: "assistant", Content: json.RawMessage(`"It automates ChatGPT."`)},
+		{Role: "user", Content: json.RawMessage(`"Summarize that."`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# System\n\nYou are terse.\n\n# Conversation\n\nUser:\nWhat does this app do?\n\nAssistant:\nIt automates ChatGPT.\n\n# User\n\nSummarize that."
 	if prompt != want {
 		t.Fatalf("flattenMessages() = %q, want %q", prompt, want)
 	}
@@ -32,26 +63,26 @@ func TestFlattenMessagesSupportsTextParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prompt != "Hello\nworld" {
+	if prompt != "# User\n\nHello\nworld" {
 		t.Fatalf("flattenMessages() = %q", prompt)
 	}
 }
 
-func TestFlattenMessagesSingleUserMessagePassesThrough(t *testing.T) {
+func TestFlattenMessagesWrapsSingleUserMessage(t *testing.T) {
 	prompt, err := flattenMessages([]chatRequestMessage{
 		{Role: "user", Content: json.RawMessage(`"Say hi"`)},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prompt != "Say hi" {
+	if prompt != "# User\n\nSay hi" {
 		t.Fatalf("flattenMessages() = %q", prompt)
 	}
 }
 
 func TestChatCompletionsHandler(t *testing.T) {
 	handler := NewHandler(AskFunc(func(prompt string) (string, error) {
-		if prompt != "Ping" {
+		if prompt != "# User\n\nPing" {
 			t.Fatalf("prompt = %q", prompt)
 		}
 		return "Pong", nil

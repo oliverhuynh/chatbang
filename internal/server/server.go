@@ -176,9 +176,9 @@ func flattenMessages(messages []chatRequestMessage) (string, error) {
 		return "", fmt.Errorf("messages must not be empty")
 	}
 
-	lines := make([]string, 0, len(messages))
-	roles := make([]string, 0, len(messages))
-	contents := make([]string, 0, len(messages))
+	systemParts := make([]string, 0, 1)
+	conversationLines := make([]string, 0, len(messages))
+	var finalUser string
 	for i, message := range messages {
 		role := strings.TrimSpace(message.Role)
 		if role == "" {
@@ -195,17 +195,43 @@ func flattenMessages(messages []chatRequestMessage) (string, error) {
 		if trimmed == "" {
 			continue
 		}
-		roles = append(roles, strings.ToLower(role))
-		contents = append(contents, trimmed)
-		lines = append(lines, strings.ToUpper(role)+": "+trimmed)
+		switch strings.ToLower(role) {
+		case "system":
+			systemParts = append(systemParts, trimmed)
+		case "user":
+			if finalUser != "" {
+				conversationLines = append(conversationLines, "User:\n"+finalUser)
+			}
+			finalUser = trimmed
+		case "assistant":
+			if finalUser != "" {
+				conversationLines = append(conversationLines, "User:\n"+finalUser)
+				finalUser = ""
+			}
+			conversationLines = append(conversationLines, "Assistant:\n"+trimmed)
+		default:
+			if finalUser != "" {
+				conversationLines = append(conversationLines, "User:\n"+finalUser)
+				finalUser = ""
+			}
+			conversationLines = append(conversationLines, strings.ToUpper(role)+":\n"+trimmed)
+		}
 	}
-	if len(lines) == 0 {
+	if len(systemParts) == 0 && len(conversationLines) == 0 && finalUser == "" {
 		return "", fmt.Errorf("messages must include text content")
 	}
-	if len(contents) == 1 && roles[0] == "user" {
-		return contents[0], nil
+
+	sections := make([]string, 0, 3)
+	if len(systemParts) > 0 {
+		sections = append(sections, "# System\n\n"+strings.Join(systemParts, "\n\n"))
 	}
-	return strings.Join(lines, "\n\n"), nil
+	if len(conversationLines) > 0 {
+		sections = append(sections, "# Conversation\n\n"+strings.Join(conversationLines, "\n\n"))
+	}
+	if finalUser != "" {
+		sections = append(sections, "# User\n\n"+finalUser)
+	}
+	return strings.Join(sections, "\n\n"), nil
 }
 
 func extractContentText(raw json.RawMessage) (string, error) {

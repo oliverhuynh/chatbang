@@ -62,11 +62,13 @@ Unsupported or intentionally omitted:
 - strict token accounting
 - multi-choice completions
 
-Current limitation:
+Prompt translation:
 
-- `system`, `user`, and `assistant` roles are accepted in the request shape, but role semantics are still approximated by flattening messages into one prompt string.
-- This means `system` is not yet a true privileged instruction channel and `assistant` history is not yet modeled faithfully.
-- Follow-up work is tracked in `tasks/003-role-semantics-support/`.
+- The first non-empty `system` message starts the `# System` section.
+- Later `system` messages are appended under `# System` without additional headings; clients can use those messages for retrieved context or memory.
+- Earlier `user` and `assistant` turns are preserved under `# Conversation`.
+- The final non-empty `user` message is placed under `# User`.
+- This is still a prompt shim over one ChatGPT browser submission, not native OpenAI role execution.
 
 ## Response shape
 

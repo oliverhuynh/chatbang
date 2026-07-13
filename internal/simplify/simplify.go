@@ -107,6 +107,10 @@ func walkNode(n *html.Node, buf *strings.Builder, inPre bool) {
 			buf.WriteByte('\n')
 		case "li":
 			walkChildren(n, buf)
+		case "table":
+			buf.WriteByte('\n')
+			writeMarkdownTable(n, buf)
+			buf.WriteByte('\n')
 		case "div", "section", "article", "main", "header", "footer":
 			for c := n.FirstChild; c != nil; c = c.NextSibling {
 				walkNode(c, buf, inPre)
@@ -130,6 +134,99 @@ func walkNode(n *html.Node, buf *strings.Builder, inPre bool) {
 	case html.DoctypeNode, html.CommentNode:
 		return
 	}
+}
+
+type tableRow []string
+
+func writeMarkdownTable(n *html.Node, buf *strings.Builder) {
+	rows := collectTableRows(n)
+	if len(rows) == 0 {
+		return
+	}
+
+	width := 0
+	for _, row := range rows {
+		width = max(width, len(row))
+	}
+	writeMarkdownTableRow(buf, rows[0], width)
+	writeMarkdownTableRow(buf, separatorRow(width), width)
+	for _, row := range rows[1:] {
+		writeMarkdownTableRow(buf, row, width)
+	}
+}
+
+func collectTableRows(n *html.Node) []tableRow {
+	var rows []tableRow
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == "tr" {
+			if row := collectTableCells(node); len(row) > 0 {
+				rows = append(rows, row)
+			}
+			return
+		}
+		for c := node.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return rows
+}
+
+func collectTableCells(row *html.Node) tableRow {
+	var cells tableRow
+	for c := row.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode && (c.Data == "th" || c.Data == "td") {
+			cells = append(cells, markdownCellText(c))
+		}
+	}
+	return cells
+}
+
+func markdownCellText(n *html.Node) string {
+	var buf strings.Builder
+	collectPlainText(n, &buf)
+	text := strings.Join(strings.Fields(buf.String()), " ")
+	return strings.ReplaceAll(text, "|", `\|`)
+}
+
+func collectPlainText(n *html.Node, buf *strings.Builder) {
+	switch n.Type {
+	case html.TextNode:
+		buf.WriteString(n.Data)
+	case html.ElementNode:
+		switch n.Data {
+		case "br":
+			buf.WriteByte(' ')
+		case "button", "svg", "img", "input", "textarea", "select", "option",
+			"script", "style", "noscript":
+			return
+		}
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		collectPlainText(c, buf)
+	}
+}
+
+func separatorRow(width int) tableRow {
+	row := make(tableRow, width)
+	for i := range row {
+		row[i] = "---"
+	}
+	return row
+}
+
+func writeMarkdownTableRow(buf *strings.Builder, row tableRow, width int) {
+	buf.WriteString("| ")
+	for i := 0; i < width; i++ {
+		if i > 0 {
+			buf.WriteString(" | ")
+		}
+		if i < len(row) {
+			buf.WriteString(row[i])
+		}
+	}
+	buf.WriteString(" |\n")
 }
 
 func walkChildren(n *html.Node, buf *strings.Builder) {

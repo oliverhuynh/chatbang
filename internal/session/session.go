@@ -160,6 +160,9 @@ func (s *Session) ask(prompt string, fresh bool) (string, error) {
 		return "", err
 	}
 	s.lastPeak = peakLen
+	if err := s.cleanupConversationCookies(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not clean conv_key cookies: %v\n", err)
+	}
 	fmt.Fprintf(os.Stderr, "[session] ask done peakLen=%d resultLen=%d\n", peakLen, len(result))
 	return result, nil
 }
