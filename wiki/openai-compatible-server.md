@@ -92,7 +92,7 @@ For model discovery, the server returns a static OpenAI-style list response with
 
 ## Key files
 
-- `internal/server/server.go` — HTTP handler, request flattening, error responses
+- `internal/server/server.go` — HTTP handler, message-to-prompt translation, error responses
 - `internal/session/session.go` — per-request browser ask flow and recovery
 - `internal/cli/cli.go` — `--server`, `--listen`, `--port`
 - `internal/app/app.go` — server startup and bind address wiring

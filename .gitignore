@@ -13,6 +13,9 @@ direnv/
 tasks
 AGENTS.md
 .codex
+.leann/
 .env
 tmp
 .agent
+.leannrc
+.repo-wiki
