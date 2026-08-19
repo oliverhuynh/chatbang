@@ -39,6 +39,25 @@ type chatCompletionResponse struct {
 	Usage   chatCompletionUsage    `json:"usage"`
 }
 
+type chatCompletionChunk struct {
+	ID      string                      `json:"id"`
+	Object  string                      `json:"object"`
+	Created int64                       `json:"created"`
+	Model   string                      `json:"model"`
+	Choices []chatCompletionChunkChoice `json:"choices"`
+}
+
+type chatCompletionChunkChoice struct {
+	Index        int                 `json:"index"`
+	Delta        chatCompletionDelta `json:"delta"`
+	FinishReason *string             `json:"finish_reason"`
+}
+
+type chatCompletionDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
 type modelsResponse struct {
 	Object string      `json:"object"`
 	Data   []modelInfo `json:"data"`
@@ -111,10 +130,6 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "model", "model is required")
 		return
 	}
-	if req.Stream {
-		writeError(w, http.StatusBadRequest, "invalid_request_error", "stream", "stream=true is not supported")
-		return
-	}
 	if payload, err := json.Marshal(req.Messages); err == nil {
 		fmt.Fprintf(os.Stderr, "[server] incoming messages: %s\n", quotedPreview(string(payload), 800))
 	}
@@ -128,6 +143,11 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	reply, err := h.asker.AskFresh(prompt)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
+		return
+	}
+
+	if req.Stream {
+		writeChatCompletionStream(w, req.Model, reply)
 		return
 	}
 
@@ -259,6 +279,47 @@ func extractContentText(raw json.RawMessage) (string, error) {
 		}
 	}
 	return strings.Join(chunks, "\n"), nil
+}
+
+func writeChatCompletionStream(w http.ResponseWriter, model, reply string) {
+	id := newID("chatcmpl")
+	created := time.Now().Unix()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	writeChunk := func(delta chatCompletionDelta, finishReason *string) {
+		chunk := chatCompletionChunk{
+			ID:      id,
+			Object:  "chat.completion.chunk",
+			Created: created,
+			Model:   model,
+			Choices: []chatCompletionChunkChoice{{
+				Index:        0,
+				Delta:        delta,
+				FinishReason: finishReason,
+			}},
+		}
+		payload, _ := json.Marshal(chunk)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+
+	writeChunk(chatCompletionDelta{Role: "assistant"}, nil)
+	if reply != "" {
+		writeChunk(chatCompletionDelta{Content: reply}, nil)
+	}
+	finishReason := "stop"
+	writeChunk(chatCompletionDelta{}, &finishReason)
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func newID(prefix string) string {
