@@ -47,16 +47,17 @@ Minimal supported request body:
 
 - `model`
 - `messages`
-- optional `stream=false`
+- optional `stream`
 
 The implementation accepts common text-only message forms:
 
 - string `content`
 - array-of-parts `content` with `type=text`
 
+`stream=true` is supported as compatibility streaming. ChatBang still waits for the browser-backed `AskFresh()` call to finish, then emits the completed answer as OpenAI-style SSE `chat.completion.chunk` events followed by `data: [DONE]`. This is buffered/synthetic streaming, not token-by-token streaming from ChatGPT.
+
 Unsupported or intentionally omitted:
 
-- `stream=true`
 - tool calls / function calls
 - auth
 - strict token accounting
@@ -72,13 +73,22 @@ Prompt translation:
 
 ## Response shape
 
-The server returns a minimal OpenAI-style chat completion response:
+For `stream=false` or when `stream` is omitted, the server returns a minimal OpenAI-style chat completion response:
 
 - `object=chat.completion`
 - one assistant choice
 - `finish_reason=stop`
 
-`usage` is present but zero-filled.
+For `stream=true`, the server returns `Content-Type: text/event-stream` and emits:
+
+1. an assistant-role chunk
+2. one content chunk containing the completed browser response
+3. a final chunk with `finish_reason=stop`
+4. `data: [DONE]`
+
+All chunks for one request share the same completion ID, model, and creation timestamp.
+
+`usage` is present but zero-filled on non-streaming responses.
 
 For model discovery, the server returns a static OpenAI-style list response with a few common ChatGPT model IDs (`gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-mini`). The list is compatibility-only and is not strict capability gating.
 
@@ -103,5 +113,5 @@ Repo-local curl helpers:
 
 - `scripts/test-chat-basic.sh`
 - `scripts/test-chat-system-user.sh`
-- `scripts/test-chat-stream-error.sh`
+- `scripts/test-chat-stream.sh`
 - `scripts/test-models.sh`
