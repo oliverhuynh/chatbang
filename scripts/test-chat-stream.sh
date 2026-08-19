@@ -6,12 +6,12 @@ PORT="${PORT:-19999}"
 MODEL="${MODEL:-chatbang-pro}"
 URL="http://${HOST}:${PORT}/v1/chat/completions"
 
-curl -i -sS "$URL" \
+curl -i -N -sS "$URL" \
   -H 'Content-Type: application/json' \
   -d "{
     \"model\": \"${MODEL}\",
     \"stream\": true,
     \"messages\": [
-      {\"role\": \"user\", \"content\": \"This should fail because stream is unsupported.\"}
+      {\"role\": \"user\", \"content\": \"Reply with exactly: stream works\"}
     ]
   }"

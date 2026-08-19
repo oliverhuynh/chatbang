@@ -112,9 +112,12 @@ func TestChatCompletionsHandler(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsRejectsStream(t *testing.T) {
+func TestChatCompletionsStreamsBufferedSSE(t *testing.T) {
 	handler := NewHandler(AskFunc(func(prompt string) (string, error) {
-		return "unused", nil
+		if prompt != "# User\n\nPing" {
+			t.Fatalf("prompt = %q", prompt)
+		}
+		return "Pong", nil
 	}))
 
 	body := bytes.NewBufferString(`{"model":"gpt-4o-mini","stream":true,"messages":[{"role":"user","content":"Ping"}]}`)
@@ -123,8 +126,24 @@ func TestChatCompletionsRejectsStream(t *testing.T) {
 
 	handler.handleChatCompletions(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("content-type = %q", got)
+	}
+
+	stream := rec.Body.String()
+	for _, want := range []string{
+		`"object":"chat.completion.chunk"`,
+		`"role":"assistant"`,
+		`"content":"Pong"`,
+		`"finish_reason":"stop"`,
+		"data: [DONE]\n\n",
+	} {
+		if !strings.Contains(stream, want) {
+			t.Fatalf("stream missing %q: %s", want, stream)
+		}
 	}
 }
 
