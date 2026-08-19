@@ -96,7 +96,7 @@ func (s *Session) Close() {
 		if s.ctx.Err() != nil {
 			fmt.Fprintf(os.Stderr, "[debug] Close: context already cancelled (%v)\n", s.ctx.Err())
 		} else {
-			fmt.Fprintln(os.Stderr, "[debug] Close: gracefully closing browser…")
+			fmt.Fprintln(os.Stderr, "[debug] Close: gracefully closing browser\u2026")
 			tctx, tcancel := context.WithTimeout(s.ctx, 3*time.Second)
 			if err := chromedp.Cancel(tctx); err != nil {
 				fmt.Fprintf(os.Stderr, "[debug] Close: Cancel error: %v\n", err)
@@ -226,7 +226,7 @@ func LoginProfile(browserPath, profileDir string) {
 		log.Fatal(err)
 	}
 	fmt.Println("Configuration saved.")
-	fmt.Fprintln(os.Stderr, "[debug] LoginProfile: gracefully closing browser…")
+	fmt.Fprintln(os.Stderr, "[debug] LoginProfile: gracefully closing browser\u2026")
 	// Use chromedp.Cancel to close gracefully so Chrome flushes cookies
 	// and session data before the process exits.  The deferred
 	// allocCancel (SIGKILL) later is harmless if Chrome already stopped.
@@ -712,7 +712,7 @@ func KillBackgroundBrowser() error {
 
 	tabCtx, tabCancel := chromedp.NewContext(ctx)
 	defer tabCancel()
-	fmt.Fprintln(os.Stderr, "[debug] KillBackgroundBrowser: gracefully closing browser…")
+	fmt.Fprintln(os.Stderr, "[debug] KillBackgroundBrowser: gracefully closing browser\u2026")
 	tctx, tcancel := context.WithTimeout(tabCtx, 3*time.Second)
 	defer tcancel()
 	if err := chromedp.Run(tctx, chromedp.ActionFunc(func(ctx context.Context) error {
