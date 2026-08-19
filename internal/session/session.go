@@ -550,7 +550,10 @@ func submitPrompt(ctx context.Context, prompt string) error {
 			if (!sel) fail('editor view has no selection');
 			if (typeof view.pasteText !== 'function') fail('editor view has no pasteText');
 
-			view.pasteText(text, sel.from, sel.to);
+			// ProseMirror pasteText is pasteText(text, event?). Passing selection
+			// positions here makes current ChatGPT paste handlers receive a number
+			// where they expect a ClipboardEvent-like object.
+			view.pasteText(text);
 
 			const afterText = root.textContent || '';
 
