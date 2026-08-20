@@ -1,1 +1,0 @@
-Attachment staging is intentionally rooted outside `/tmp` so sandboxed Chrome builds share the same filesystem view as ChatBang. Set `CHATBANG_ATTACHMENT_TMPDIR` to override the staging root when ChatBang and Chrome use a custom shared filesystem path.
