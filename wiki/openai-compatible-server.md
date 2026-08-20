@@ -80,13 +80,16 @@ Remote attachment downloads reject loopback/private/link-local and selected rese
 Attachment automation intentionally bypasses the native file picker:
 
 1. Prefer ChatGPT's hidden general-purpose `input#upload-files`.
-2. Set local temporary paths with Chrome DevTools Protocol file-input upload (`DOM.setFileInputFiles` via `chromedp.SetUploadFiles`).
-3. If the general input has not been mounted, open the composer `+` menu only to make React render attachment controls, then retry the hidden input. Do not automate the operating-system file picker.
-4. Use `#upload-photos` only as a fallback when every attachment is an image.
-5. Wait until ChatGPT's send button exists and is enabled before inserting/submitting the prompt. This is the readiness signal that the background attachment upload completed.
-6. If CDP populated the input but ChatGPT did not mount a send button, dispatch one `input`/`change` event pair as a React compatibility fallback, then wait again.
+2. Set local temporary paths with Chrome DevTools Protocol file-input upload (`DOM.setFileInputFiles` via `chromedp.SetUploadFiles`) and verify that the input received every selected file.
+3. Wait for ChatGPT to render attachment UI such as the file chip/remove affordance. File selection alone is not treated as success.
+4. If the attachment UI is not observed after a short grace period, dispatch one `input`/`change` pair as a React compatibility fallback and verify again.
+5. If the general file input has not been mounted, open the composer `+` menu only to make React render attachment controls, then retry the hidden input. Do not automate the operating-system file picker.
+6. Use `#upload-photos` only as a fallback when every attachment is an image.
+7. Insert the prompt after the attachment is visibly accepted. ChatGPT may keep the send button hidden/disabled while the text editor is empty, so waiting for send readiness before inserting the prompt can deadlock.
+8. Wait until the attachment is still present **and** the send button is visible/enabled. Attachment disappearance is a hard failure rather than falling through to a prompt-only message.
+9. Submit the attachment-bearing text turn with Enter; attachment-only turns use the verified enabled send button.
 
-The file upload and prompt submit are retried together after a dead-browser recovery so a reconnect cannot silently drop an attachment.
+Attachment UI acceptance has a short timeout, while final send readiness has a longer 90-second timeout because ChatGPT performs file upload/processing in the background. The file upload and prompt submit are retried together after a dead-browser recovery so a reconnect cannot silently drop an attachment.
 
 `stream=true` is supported as compatibility streaming. ChatBang still waits for the browser-backed request to finish, then emits the completed answer as OpenAI-style SSE `chat.completion.chunk` events followed by `data: [DONE]`. This is buffered/synthetic streaming, not token-by-token streaming from ChatGPT.
 
