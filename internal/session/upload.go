@@ -11,9 +11,7 @@ import (
 	"time"
 
 	cdpinput "github.com/chromedp/cdproto/input"
-	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
-	"github.com/chromedp/chromedp/kb"
 )
 
 const (
@@ -609,29 +607,11 @@ func uploadErrorText(text string) string {
 }
 
 func submitAttachmentTurn(ctx context.Context, prompt string) error {
-	c := chromedp.FromContext(ctx)
-	if c == nil || c.Target == nil {
-		return fmt.Errorf("browser target is unavailable")
+	const selector = `#composer-submit-button, button[data-testid="send-button"]`
+	if err := chromedp.Run(ctx, chromedp.Click(selector, chromedp.ByQuery)); err != nil {
+		return fmt.Errorf("submit attachment turn via send button: %w", err)
 	}
-	if err := target.ActivateTarget(c.Target.TargetID).Do(ctx); err != nil {
-		return err
-	}
-
-	if strings.TrimSpace(prompt) == "" {
-		// Attachment-only turns do not have a focused text entry to receive Enter.
-		// At this point readiness has already proved the send control is enabled.
-		if err := chromedp.Run(ctx, chromedp.Click(`#composer-submit-button, button[data-testid="send-button"]`, chromedp.ByQuery)); err != nil {
-			return fmt.Errorf("submit attachment-only turn: %w", err)
-		}
-		return nil
-	}
-
-	if err := chromedp.Run(ctx,
-		chromedp.Click(`#prompt-textarea`, chromedp.ByID),
-		chromedp.KeyEvent(kb.Enter),
-	); err != nil {
-		return fmt.Errorf("submit attachment turn via Enter: %w", err)
-	}
+	fmt.Fprintln(os.Stderr, "[session] attachment turn submitted via send button")
 	return nil
 }
 
