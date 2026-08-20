@@ -10,11 +10,16 @@ import (
 	"strings"
 	"time"
 
+	cdpinput "github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/kb"
 )
 
-const attachmentReadyTimeout = 45 * time.Second
+const (
+	attachmentObservedTimeout = 15 * time.Second
+	attachmentSendTimeout     = 90 * time.Second
+)
 
 var generalUploadSelectors = []string{
 	`input#upload-files[type="file"]`,
@@ -113,16 +118,30 @@ func uploadAndSubmit(ctx context.Context, prompt string, files []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "[session] attached %d file(s) via %s\n", len(files), selector)
+	fmt.Fprintf(os.Stderr, "[session] selected %d attachment file(s) via %s\n", len(files), selector)
 
-	if err := waitForAttachmentReady(ctx, selector, files); err != nil {
+	// File selection and ChatGPT accepting/rendering the attachment are different
+	// states. Verify an attachment chip/affordance before touching the prompt.
+	if err := waitForAttachmentObserved(ctx, selector, files); err != nil {
 		return err
 	}
 
+	// ChatGPT commonly keeps the send button hidden/disabled while the editor is
+	// empty, even when an attachment is already present. Insert text before waiting
+	// for final send readiness.
 	if strings.TrimSpace(prompt) != "" {
-		return submitPrompt(ctx, prompt)
+		if err := insertAttachmentPrompt(ctx, prompt); err != nil {
+			return err
+		}
 	}
-	return submitAttachmentOnly(ctx)
+
+	// The final gate requires BOTH the attachment to still be present and the send
+	// control to be visible/enabled. This prevents a prompt-only send if an upload
+	// failed or the attachment disappeared during a React rerender.
+	if err := waitForAttachmentSendReady(ctx, files); err != nil {
+		return err
+	}
+	return submitAttachmentTurn(ctx, prompt)
 }
 
 func uploadFilesToComposer(ctx context.Context, files []string) (string, error) {
@@ -232,57 +251,224 @@ func openAttachmentMenu(ctx context.Context) error {
 	return nil
 }
 
-func waitForAttachmentReady(ctx context.Context, selector string, files []string) error {
-	// DOM.setFileInputFiles reliably populates input.files. ChatGPT still needs to
-	// observe the selection and finish its own background upload. Give React a
-	// short grace period first; only dispatch input/change if no attachment UI
-	// evidence appears, avoiding duplicate upload handlers on healthy builds.
+func waitForAttachmentObserved(ctx context.Context, selector string, files []string) error {
 	fallbackAt := time.Now().Add(1500 * time.Millisecond)
-	deadline := time.Now().Add(attachmentReadyTimeout)
+	deadline := time.Now().Add(attachmentObservedTimeout)
 	fallbackDispatched := false
 	var state composerUploadState
 
 	for time.Now().Before(deadline) {
 		var err error
-		state, err = attachmentComposerState(ctx)
+		state, err = attachmentComposerState(ctx, files)
 		if err != nil {
 			return err
 		}
-		if state.Ready {
+		if state.AttachmentsObserved {
+			fmt.Fprintf(os.Stderr, "[session] ChatGPT attachment UI observed count=%d\n", state.AttachmentCount)
 			return nil
 		}
 		if uploadErrorText(state.StatusText) != "" {
 			return fmt.Errorf("ChatGPT attachment upload failed: %s", uploadErrorText(state.StatusText))
 		}
-
-		if !fallbackDispatched && time.Now().After(fallbackAt) && !composerMentionsFiles(state.ComposerText, files) {
+		if !fallbackDispatched && time.Now().After(fallbackAt) {
 			if err := dispatchUploadEvents(ctx, selector); err != nil {
 				return err
 			}
 			fallbackDispatched = true
 			fmt.Fprintln(os.Stderr, "[session] attachment UI not observed; dispatched file input events fallback")
 		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if strings.TrimSpace(state.StatusText) != "" {
+		return fmt.Errorf("timed out waiting for ChatGPT to accept attachment: %s", strings.TrimSpace(state.StatusText))
+	}
+	return fmt.Errorf("timed out waiting for ChatGPT attachment UI after selecting %d file(s)", len(files))
+}
+
+func insertAttachmentPrompt(ctx context.Context, prompt string) error {
+	fmt.Fprintf(os.Stderr, "[session] insert attachment prompt nl=%d: %s\n", strings.Count(prompt, "\n"), quotedPreview(prompt, 800))
+	if err := chromedp.Run(ctx,
+		chromedp.WaitVisible(`#prompt-textarea`, chromedp.ByID),
+		chromedp.Click(`#prompt-textarea`, chromedp.ByID),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return cdpinput.InsertText(prompt).Do(ctx)
+		}),
+		chromedp.Sleep(400*time.Millisecond),
+	); err != nil {
+		return fmt.Errorf("insert prompt text: %w", err)
+	}
+
+	observed, err := attachmentPromptText(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(observed) == "" {
+		// Rare fallback for builds where CDP Input.insertText does not update the
+		// controlled editor. This mirrors normal browser input events and is only
+		// used after verifying the primary insert produced no visible text.
+		promptJSON, _ := json.Marshal(prompt)
+		js := fmt.Sprintf(`(() => {
+			const el = document.querySelector('#prompt-textarea');
+			if (!el) return false;
+			el.focus();
+			if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+				el.value = %s;
+				el.dispatchEvent(new InputEvent('input', { bubbles: true, data: %s, inputType: 'insertFromPaste' }));
+				el.dispatchEvent(new Event('change', { bubbles: true }));
+				return true;
+			}
+			el.textContent = %s;
+			el.dispatchEvent(new InputEvent('input', { bubbles: true, data: %s, inputType: 'insertFromPaste' }));
+			return true;
+		})()`, promptJSON, promptJSON, promptJSON, promptJSON)
+		var applied bool
+		if err := chromedp.Run(ctx, chromedp.Evaluate(js, &applied), chromedp.Sleep(300*time.Millisecond)); err != nil {
+			return fmt.Errorf("fallback prompt insertion: %w", err)
+		}
+		if !applied {
+			return fmt.Errorf("prompt textarea disappeared during fallback insertion")
+		}
+		observed, err = attachmentPromptText(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	observedRunes := len([]rune(observed))
+	promptRunes := len([]rune(prompt))
+	if strings.TrimSpace(observed) == "" {
+		return fmt.Errorf("prompt insertion completed but ChatGPT editor stayed empty")
+	}
+	if promptRunes >= 50000 && observedRunes < promptRunes-2000 {
+		return fmt.Errorf("prompt appears truncated in ChatGPT composer: expected about %d runes, observed %d", promptRunes, observedRunes)
+	}
+	return nil
+}
+
+func attachmentPromptText(ctx context.Context) (string, error) {
+	const js = `(() => {
+		const el = document.querySelector('#prompt-textarea');
+		if (!el) return '';
+		if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) return el.value || '';
+		return el.innerText || el.textContent || '';
+	})()`
+	var value string
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &value)); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func waitForAttachmentSendReady(ctx context.Context, files []string) error {
+	deadline := time.Now().Add(attachmentSendTimeout)
+	var lostAt time.Time
+	var state composerUploadState
+
+	for time.Now().Before(deadline) {
+		var err error
+		state, err = attachmentComposerState(ctx, files)
+		if err != nil {
+			return err
+		}
+		if uploadErrorText(state.StatusText) != "" {
+			return fmt.Errorf("ChatGPT attachment upload failed: %s", uploadErrorText(state.StatusText))
+		}
+		if state.AttachmentsObserved {
+			lostAt = time.Time{}
+			if state.SendReady {
+				fmt.Fprintln(os.Stderr, "[session] attachments retained and send button enabled")
+				return nil
+			}
+		} else {
+			if lostAt.IsZero() {
+				lostAt = time.Now()
+			} else if time.Since(lostAt) > 3*time.Second {
+				return fmt.Errorf("ChatGPT attachment disappeared before the message became sendable")
+			}
+		}
 		time.Sleep(250 * time.Millisecond)
 	}
 
 	if strings.TrimSpace(state.StatusText) != "" {
-		return fmt.Errorf("timed out waiting for ChatGPT attachment upload: %s", strings.TrimSpace(state.StatusText))
+		return fmt.Errorf("timed out waiting for attachment send readiness: %s", strings.TrimSpace(state.StatusText))
 	}
-	return fmt.Errorf("timed out waiting for ChatGPT attachment upload to enable the send button")
+	return fmt.Errorf("timed out after %s waiting for ChatGPT to enable send with %d attachment(s)", attachmentSendTimeout, len(files))
 }
 
 type composerUploadState struct {
-	SendPresent bool   `json:"sendPresent"`
-	Ready       bool   `json:"ready"`
-	StatusText  string `json:"statusText"`
-	ComposerText string `json:"composerText"`
+	SendPresent         bool   `json:"sendPresent"`
+	SendReady           bool   `json:"sendReady"`
+	AttachmentsObserved bool   `json:"attachmentsObserved"`
+	AttachmentCount     int    `json:"attachmentCount"`
+	StatusText          string `json:"statusText"`
 }
 
-func attachmentComposerState(ctx context.Context) (composerUploadState, error) {
-	const js = `(() => {
-		const send = document.querySelector('#composer-submit-button') || document.querySelector('[data-testid="send-button"]');
+func attachmentComposerState(ctx context.Context, files []string) (composerUploadState, error) {
+	expected := make([]string, 0, len(files))
+	for _, file := range files {
+		expected = append(expected, filepath.Base(file))
+	}
+	expectedJSON, err := json.Marshal(expected)
+	if err != nil {
+		return composerUploadState{}, err
+	}
+
+	js := fmt.Sprintf(`(() => {
+		const expectedNames = %s.map(value => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim());
+		const send = document.querySelector('#composer-submit-button') || document.querySelector('button[data-testid="send-button"]');
 		const prompt = document.querySelector('#prompt-textarea');
-		const composer = prompt && (prompt.closest('form') || prompt.parentElement?.parentElement || prompt.parentElement);
+		const composer = prompt?.closest?.('form') || send?.closest?.('form') || prompt?.parentElement?.parentElement || document.body;
+		const normalize = value => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+		const stemOf = name => name.replace(/\.[a-z0-9]{1,10}$/i, '');
+		const extensionOf = name => (name.match(/(\.[a-z0-9]{1,10})$/i) || [,''])[1];
+		const matchesName = (label, name) => {
+			label = normalize(label);
+			name = normalize(name);
+			if (!label || !name) return false;
+			if (label.includes(name)) return true;
+			const stem = stemOf(name);
+			const ext = extensionOf(name);
+			if (stem.length >= 4 && label.includes(stem) && (!ext || label.includes(ext))) return true;
+			const prefix = stem.slice(0, Math.min(8, stem.length));
+			const suffix = ext || name.slice(-4);
+			return prefix.length >= 4 && label.includes(prefix) && suffix && label.includes(suffix);
+		};
+		const selectors = [
+			'[role="group"][aria-label]',
+			'[data-testid*="chip"]',
+			'[data-testid*="attachment"]',
+			'[data-testid*="upload"]',
+			'[data-testid*="file"]',
+			'[aria-label*="Remove file" i]',
+			'[aria-label*="Remove attachment" i]'
+		];
+		const nodes = [];
+		const seen = new Set();
+		for (const node of Array.from(composer.querySelectorAll(selectors.join(',')))) {
+			if (!(node instanceof HTMLElement)) continue;
+			if (node.closest('textarea,[contenteditable="true"]')) continue;
+			if (seen.has(node)) continue;
+			seen.add(node);
+			nodes.push(node);
+		}
+		const labelFor = node => {
+			const values = [];
+			for (const el of [node, node.parentElement, node.parentElement?.parentElement]) {
+				if (!el) continue;
+				values.push(el.getAttribute?.('aria-label') || '');
+				values.push(el.getAttribute?.('title') || '');
+				values.push(el.getAttribute?.('data-testid') || '');
+				values.push(el.innerText || el.textContent || '');
+			}
+			return normalize(values.join(' '));
+		};
+		const labels = nodes.map(labelFor);
+		const namesReady = expectedNames.every(name => labels.some(label => matchesName(label, name)));
+		const removeNodes = Array.from(composer.querySelectorAll('[aria-label*="Remove file" i], [aria-label*="Remove attachment" i]'));
+		const removeCount = new Set(removeNodes).size;
+		const countReady = expectedNames.length > 0 && removeCount >= expectedNames.length;
+		const attachmentCount = Math.max(removeCount, namesReady ? expectedNames.length : 0);
 		const statusNodes = [
 			...document.querySelectorAll('[role="alert"]'),
 			...document.querySelectorAll('[role="dialog"]'),
@@ -290,29 +476,29 @@ func attachmentComposerState(ctx context.Context) (composerUploadState, error) {
 		];
 		const statusText = statusNodes.map(node => (node.innerText || node.textContent || '').trim())
 			.filter(Boolean).join(' | ').slice(0, 500);
+		const isVisible = node => {
+			if (!(node instanceof HTMLElement)) return false;
+			const rect = node.getBoundingClientRect();
+			const style = getComputedStyle(node);
+			return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+		};
+		const sendReady = !!send && isVisible(send) && !send.disabled &&
+			send.getAttribute('aria-disabled') !== 'true' && send.getAttribute('data-disabled') !== 'true' &&
+			getComputedStyle(send).pointerEvents !== 'none';
 		return {
 			sendPresent: !!send,
-			ready: !!send && !send.disabled && send.getAttribute('aria-disabled') !== 'true',
-			statusText,
-			composerText: composer ? (composer.innerText || composer.textContent || '').slice(0, 2000) : ''
+			sendReady,
+			attachmentsObserved: namesReady || countReady,
+			attachmentCount,
+			statusText
 		};
-	})()`
+	})()`, expectedJSON)
+
 	var state composerUploadState
 	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &state)); err != nil {
 		return composerUploadState{}, err
 	}
 	return state, nil
-}
-
-func composerMentionsFiles(text string, files []string) bool {
-	lower := strings.ToLower(text)
-	for _, file := range files {
-		name := strings.ToLower(filepath.Base(file))
-		if name != "" && strings.Contains(lower, name) {
-			return true
-		}
-	}
-	return false
 }
 
 func dispatchUploadEvents(ctx context.Context, selector string) error {
@@ -358,7 +544,7 @@ func uploadErrorText(text string) string {
 	return ""
 }
 
-func submitAttachmentOnly(ctx context.Context) error {
+func submitAttachmentTurn(ctx context.Context, prompt string) error {
 	c := chromedp.FromContext(ctx)
 	if c == nil || c.Target == nil {
 		return fmt.Errorf("browser target is unavailable")
@@ -367,18 +553,20 @@ func submitAttachmentOnly(ctx context.Context) error {
 		return err
 	}
 
-	const js = `(() => {
-		const send = document.querySelector('#composer-submit-button') || document.querySelector('[data-testid="send-button"]');
-		if (!send || send.disabled || send.getAttribute('aria-disabled') === 'true') return false;
-		send.click();
-		return true;
-	})()`
-	var clicked bool
-	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &clicked)); err != nil {
-		return err
+	if strings.TrimSpace(prompt) == "" {
+		// Attachment-only turns do not have a focused text entry to receive Enter.
+		// At this point readiness has already proved the send control is enabled.
+		if err := chromedp.Run(ctx, chromedp.Click(`#composer-submit-button, button[data-testid="send-button"]`, chromedp.ByQuery)); err != nil {
+			return fmt.Errorf("submit attachment-only turn: %w", err)
+		}
+		return nil
 	}
-	if !clicked {
-		return fmt.Errorf("ChatGPT send button was not ready for attachment-only message")
+
+	if err := chromedp.Run(ctx,
+		chromedp.Click(`#prompt-textarea`, chromedp.ByID),
+		chromedp.KeyEvent(kb.Enter),
+	); err != nil {
+		return fmt.Errorf("submit attachment turn via Enter: %w", err)
 	}
 	return nil
 }
