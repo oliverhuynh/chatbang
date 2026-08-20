@@ -114,30 +114,35 @@ func (s *Session) submitPromptAndFilesWithRetry(prompt string, files []string) e
 }
 
 func uploadAndSubmit(ctx context.Context, prompt string, files []string) error {
-	selector, err := uploadFilesToComposer(ctx, files)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "[session] selected %d attachment file(s) via %s\n", len(files), selector)
-
-	// File selection and ChatGPT accepting/rendering the attachment are different
-	// states. Verify an attachment chip/affordance before touching the prompt.
-	if err := waitForAttachmentObserved(ctx, selector, files); err != nil {
-		return err
-	}
-
-	// ChatGPT commonly keeps the send button hidden/disabled while the editor is
-	// empty, even when an attachment is already present. Insert text before waiting
-	// for final send readiness.
+	// Finish editing the composer before starting file upload. ChatGPT renders the
+	// attachment card before background upload/processing is complete; mutating the
+	// editor during that window can reset the in-flight attachment state.
 	if strings.TrimSpace(prompt) != "" {
 		if err := insertAttachmentPrompt(ctx, prompt); err != nil {
 			return err
 		}
 	}
 
+	selector, err := uploadFilesToComposer(ctx, files)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "[session] selected %d attachment file(s) via %s\n", len(files), selector)
+
+	// DOM.setFileInputFiles populates input.files. Trigger ChatGPT's upload handler
+	// immediately, then leave the editor untouched until processing completes.
+	if err := dispatchUploadEvents(ctx, selector); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "[session] dispatched attachment input/change events")
+
+	if err := waitForAttachmentObserved(ctx, files); err != nil {
+		return err
+	}
+
 	// The final gate requires BOTH the attachment to still be present and the send
-	// control to be visible/enabled. This prevents a prompt-only send if an upload
-	// failed or the attachment disappeared during a React rerender.
+	// control to be visible/enabled. ChatGPT keeps send aria-disabled while the
+	// attachment is uploading/processing, so this waits for the real upload pipeline.
 	if err := waitForAttachmentSendReady(ctx, files); err != nil {
 		return err
 	}
@@ -251,10 +256,8 @@ func openAttachmentMenu(ctx context.Context) error {
 	return nil
 }
 
-func waitForAttachmentObserved(ctx context.Context, selector string, files []string) error {
-	fallbackAt := time.Now().Add(1500 * time.Millisecond)
+func waitForAttachmentObserved(ctx context.Context, files []string) error {
 	deadline := time.Now().Add(attachmentObservedTimeout)
-	fallbackDispatched := false
 	var state composerUploadState
 
 	for time.Now().Before(deadline) {
@@ -263,19 +266,12 @@ func waitForAttachmentObserved(ctx context.Context, selector string, files []str
 		if err != nil {
 			return err
 		}
-		if state.AttachmentsObserved {
-			fmt.Fprintf(os.Stderr, "[session] ChatGPT attachment UI observed count=%d\n", state.AttachmentCount)
-			return nil
-		}
 		if uploadErrorText(state.StatusText) != "" {
 			return fmt.Errorf("ChatGPT attachment upload failed: %s", uploadErrorText(state.StatusText))
 		}
-		if !fallbackDispatched && time.Now().After(fallbackAt) {
-			if err := dispatchUploadEvents(ctx, selector); err != nil {
-				return err
-			}
-			fallbackDispatched = true
-			fmt.Fprintln(os.Stderr, "[session] attachment UI not observed; dispatched file input events fallback")
+		if state.AttachmentsObserved {
+			fmt.Fprintf(os.Stderr, "[session] ChatGPT attachment UI observed count=%d\n", state.AttachmentCount)
+			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
