@@ -62,24 +62,25 @@ This lets requests translated from the Responses API by a proxy such as 9router 
 
 ### Attachment sources
 
-ChatBang can turn these attachment sources into a local file for browser upload:
+ChatBang can turn these attachment sources into a temporary local file for browser upload:
 
 - `image_url.url` / `input_image.image_url` with a public `http://` or `https://` URL
 - image data URLs such as `data:image/png;base64,...`
 - `file.file_data` / `input_file.file_data` as base64 or a data URL
 - `file.file_url` / `input_file.file_url` with a public `http://` or `https://` URL
-- `file://` URLs and absolute local paths as a ChatBang extension when the file already exists on the server machine
 
 Opaque OpenAI `file_id` values cannot be resolved by ChatBang because it does not have the caller's OpenAI Files API credentials. Send `file_data`, `file_url`, or an image URL/data URL instead.
 
-Remote attachment downloads reject loopback/private/link-local destinations before connecting. Temporary materialized files are deleted after the request finishes.
+Arbitrary server-local paths (`/path/to/file`, `file://...`) are intentionally not accepted by the HTTP API. Because server mode can listen beyond localhost and currently has no auth layer, accepting paths from request JSON would allow a network caller to make ChatBang read local files. For a local file, encode it as `file_data`; `scripts/test-chat-file.sh` does this automatically.
+
+Remote attachment downloads reject loopback/private/link-local and selected reserved network ranges before connecting. Redirects use the same protected dialer. Temporary materialized files are deleted after the request finishes.
 
 ### Browser upload strategy
 
 Attachment automation intentionally bypasses the native file picker:
 
 1. Prefer ChatGPT's hidden general-purpose `input#upload-files`.
-2. Set local paths with Chrome DevTools Protocol file-input upload (`DOM.setFileInputFiles` via `chromedp.SetUploadFiles`).
+2. Set local temporary paths with Chrome DevTools Protocol file-input upload (`DOM.setFileInputFiles` via `chromedp.SetUploadFiles`).
 3. If the general input has not been mounted, open the composer `+` menu only to make React render attachment controls, then retry the hidden input. Do not automate the operating-system file picker.
 4. Use `#upload-photos` only as a fallback when every attachment is an image.
 5. Wait until ChatGPT's send button exists and is enabled before inserting/submitting the prompt. This is the readiness signal that the background attachment upload completed.
@@ -93,6 +94,7 @@ Unsupported or intentionally omitted:
 
 - tool calls / function calls
 - resolving OpenAI `file_id` values
+- local server-path attachments through the HTTP API
 - auth
 - strict token accounting
 - multi-choice completions
