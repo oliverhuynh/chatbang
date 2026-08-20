@@ -90,10 +90,33 @@ func validateUploadFiles(files []string) ([]string, error) {
 		if info.Size() == 0 {
 			return nil, fmt.Errorf("attachment %q is empty (0 bytes)", abs)
 		}
+		if err := makeStagedAttachmentReadable(abs); err != nil {
+			return nil, err
+		}
 		fmt.Fprintf(os.Stderr, "[session] attachment ready name=%q bytes=%d\n", filepath.Base(abs), info.Size())
 		resolved = append(resolved, abs)
 	}
 	return resolved, nil
+}
+
+func makeStagedAttachmentReadable(path string) error {
+	dir := filepath.Dir(path)
+	if !strings.HasPrefix(filepath.Base(dir), "chatbang-upload-") {
+		return nil
+	}
+
+	// Server-materialized attachments live in a private MkdirTemp directory and
+	// are written mode 0600. Chrome may run under a different OS user, so CDP can
+	// select the path while the browser itself cannot read the bytes; in that case
+	// input.files exposes the filename but reports size=0. Allow traversal of only
+	// the ephemeral staging directory and read access to the staged file.
+	if err := os.Chmod(dir, 0o711); err != nil {
+		return fmt.Errorf("make staged attachment directory browser-readable: %w", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		return fmt.Errorf("make staged attachment browser-readable: %w", err)
+	}
+	return nil
 }
 
 func (s *Session) submitPromptAndFilesWithRetry(prompt string, files []string) error {
@@ -201,6 +224,9 @@ func tryUploadSelectors(ctx context.Context, selectors, files []string) (string,
 		if count != len(files) {
 			return selector, true, fmt.Errorf("ChatGPT file input accepted %d of %d selected file(s)", count, len(files))
 		}
+		if err := verifyBrowserUploadFileSizes(ctx, selector, files); err != nil {
+			return selector, true, err
+		}
 		return selector, true, nil
 	}
 	return "", false, nil
@@ -235,6 +261,39 @@ func uploadInputFileCount(ctx context.Context, selector string) (int, error) {
 		return 0, fmt.Errorf("ChatGPT attachment file input disappeared after selection")
 	}
 	return count, nil
+}
+
+func verifyBrowserUploadFileSizes(ctx context.Context, selector string, files []string) error {
+	selectorJSON, err := json.Marshal(selector)
+	if err != nil {
+		return err
+	}
+	var observed []int64
+	js := fmt.Sprintf(`(() => {
+		const input = document.querySelector(%s);
+		if (!input || !input.files) return null;
+		return Array.from(input.files, file => file.size);
+	})()`, selectorJSON)
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &observed)); err != nil {
+		return err
+	}
+	if len(observed) != len(files) {
+		return fmt.Errorf("Chrome exposes size metadata for %d of %d selected attachment(s)", len(observed), len(files))
+	}
+	for i, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			return fmt.Errorf("stat staged attachment %q after browser selection: %w", file, err)
+		}
+		if observed[i] != info.Size() {
+			return fmt.Errorf(
+				"Chrome sees attachment %q as %d bytes, but ChatBang staged %d bytes; Chrome cannot read the staged path (check shared filesystem/permissions between ChatBang and Chrome)",
+				filepath.Base(file), observed[i], info.Size(),
+			)
+		}
+		fmt.Fprintf(os.Stderr, "[session] browser attachment size verified name=%q bytes=%d\n", filepath.Base(file), observed[i])
+	}
+	return nil
 }
 
 func openAttachmentMenu(ctx context.Context) error {
