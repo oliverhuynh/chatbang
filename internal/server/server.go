@@ -133,14 +133,15 @@ func (h *Handler) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	if payload, err := json.Marshal(req.Messages); err == nil {
 		fmt.Fprintf(os.Stderr, "[server] incoming messages: %s\n", quotedPreview(string(payload), 800))
 	}
-	prompt, err := flattenMessages(req.Messages)
+	prompt, files, cleanup, err := prepareMessages(r.Context(), req.Messages)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "messages", err.Error())
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[server] flattened prompt nl=%d: %s\n", strings.Count(prompt, "\n"), quotedPreview(prompt, 800))
+	defer cleanup()
+	fmt.Fprintf(os.Stderr, "[server] flattened prompt nl=%d files=%d: %s\n", strings.Count(prompt, "\n"), len(files), quotedPreview(prompt, 800))
 
-	reply, err := h.asker.AskFresh(prompt)
+	reply, err := askFreshWithFiles(h.asker, prompt, files)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
 		return
