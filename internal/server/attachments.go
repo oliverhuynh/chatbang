@@ -247,7 +247,11 @@ func materializeAttachments(ctx context.Context, specs []attachmentSpec) ([]stri
 		return nil, func() {}, nil
 	}
 
-	tempDir, err := os.MkdirTemp("", "chatbang-upload-")
+	tempRoot, err := attachmentTempRoot()
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("resolve attachment staging root: %w", err)
+	}
+	tempDir, err := os.MkdirTemp(tempRoot, "chatbang-upload-")
 	if err != nil {
 		return nil, func() {}, err
 	}
